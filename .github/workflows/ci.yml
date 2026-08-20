@@ -23,12 +23,18 @@ jobs:
       - run: npm run check
       - name: Install current official Codex package
         run: npm install --no-save @openai/codex
-      - name: Verify Codex binary
-        run: npx codex --version
+      - name: Verify current Codex and app-server schema
+        run: |
+          npx codex --version
+          rm -rf /tmp/codex-schema
+          npx codex app-server generate-json-schema --out /tmp/codex-schema
+          test -n "$(find /tmp/codex-schema -type f -print -quit)"
       - name: Install repository marketplace through official Codex manager
         run: |
           npx codex plugin marketplace add "$GITHUB_WORKSPACE"
           npx codex plugin add codex-worker-delegation@codex-worker-delegation-local
           npx codex plugin list --json
-      - name: Real Codex -> local Responses gateway -> chat-only upstream E2E
+      - name: Real Codex app-server cross-provider E2E
+        env:
+          CODEX_BIN: ${{ github.workspace }}/node_modules/.bin/codex
         run: node scripts/real-codex-e2e.mjs
