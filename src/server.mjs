@@ -156,13 +156,27 @@ async function executeWorker(body, { store, env }) {
 
 async function loadCatalog({ store, vault, env, fetchImpl }) {
   const state = await store.read();
-  const result = { official: { ok: false, models: [], error: null }, thirdParty: { ok: false, models: [], error: null } };
-  try { result.official.models = await withCodexAppServer((client) => client.listModels(), { env }); result.official.ok = true; }
-  catch (error) { result.official.error = error.message; }
+  const result = {
+    official: { ok: false, models: [], account: null, requiresOpenaiAuth: null, error: null },
+    thirdParty: { ok: false, models: [], configured: Boolean(state.provider), error: null }
+  };
+  try {
+    const official = await withCodexAppServer(async (client) => {
+      const [models, account] = await Promise.all([client.listModels(), client.getAccount({ refreshToken: false })]);
+      return { models, account };
+    }, { env });
+    result.official.models = official.models;
+    result.official.account = official.account?.account || null;
+    result.official.requiresOpenaiAuth = Boolean(official.account?.requiresOpenaiAuth);
+    result.official.ok = true;
+  } catch (error) { result.official.error = error.message; }
   if (!state.provider) result.thirdParty.error = 'New API provider is not configured';
   else {
-    try { const apiKey = await vault.decrypt(state.provider.apiKeyCipher); result.thirdParty.models = await listProviderModels({ baseUrl: state.provider.baseUrl, apiKey, fetchImpl, extraHeaders: state.provider.headers }); result.thirdParty.ok = true; }
-    catch (error) { result.thirdParty.error = error.message; }
+    try {
+      const apiKey = await vault.decrypt(state.provider.apiKeyCipher);
+      result.thirdParty.models = await listProviderModels({ baseUrl: state.provider.baseUrl, apiKey, fetchImpl, extraHeaders: state.provider.headers });
+      result.thirdParty.ok = true;
+    } catch (error) { result.thirdParty.error = error.message; }
   }
   return result;
 }
