@@ -98,6 +98,10 @@ export class CodexAppServerClient {
     });
   }
 
+  async getAccount({ refreshToken = false } = {}) {
+    return this.request('account/read', { refreshToken });
+  }
+
   async listModels({ includeHidden = false } = {}) {
     const all = [];
     let cursor = null;
