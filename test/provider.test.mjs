@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { endpoints, probeProvider } from '../src/provider.mjs';
+import { endpoints, listProviderModels, probeProvider } from '../src/provider.mjs';
 
 async function listen(handler) {
   const server = http.createServer(handler);
@@ -14,8 +14,24 @@ test('normalizes root, /v1, and concrete endpoints', () => {
   assert.equal(new URL(endpoints('https://x.test').responses).pathname, '/v1/responses');
   assert.equal(new URL(endpoints('https://x.test/v1').chat).pathname, '/v1/chat/completions');
   assert.equal(new URL(endpoints('https://x.test/v1/responses').chat).pathname, '/v1/chat/completions');
+  assert.equal(new URL(endpoints('https://x.test/v1/chat/completions').models).pathname, '/v1/models');
   assert.throws(() => endpoints('ftp://x.test/v1'), /http or https/);
   assert.throws(() => endpoints('https://u:p@x.test/v1'), /credentials/);
+});
+
+test('reads and normalizes third-party /v1/models catalog', async (t) => {
+  const { server, base } = await listen((req, res) => {
+    assert.equal(req.url, '/v1/models');
+    assert.equal(req.headers.authorization, 'Bearer k');
+    res.writeHead(200, {'content-type':'application/json'});
+    res.end(JSON.stringify({data:[{id:'model-a',owned_by:'vendor'},{id:'model-b',display_name:'Model B'},{id:'model-a'}]}));
+  });
+  t.after(() => server.close());
+  const models = await listProviderModels({ baseUrl: base, apiKey:'k' });
+  assert.deepEqual(models, [
+    {id:'model-a',name:'model-a',ownedBy:'vendor'},
+    {id:'model-b',name:'Model B',ownedBy:null}
+  ]);
 });
 
 test('probe chooses native Responses when endpoint succeeds', async (t) => {
