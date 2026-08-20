@@ -5,6 +5,7 @@ on:
 jobs:
   test:
     strategy:
+      fail-fast: false
       matrix:
         node: [20, 22, 24]
     runs-on: ubuntu-latest
@@ -38,3 +39,29 @@ jobs:
         env:
           CODEX_BIN: ${{ github.workspace }}/node_modules/.bin/codex
         run: node scripts/real-codex-e2e.mjs
+  chatgpt-linux-package:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download official ChatGPT Linux deb
+        run: |
+          curl --fail --location --retry 3 --retry-delay 2 \
+            https://persistent.oaistatic.com/codex-app-prod/linux/deb/latest/chatgpt_amd64.deb \
+            --output /tmp/chatgpt_amd64.deb
+          test -s /tmp/chatgpt_amd64.deb
+          dpkg-deb --info /tmp/chatgpt_amd64.deb
+      - name: Extract and inspect official Linux package layout
+        run: |
+          rm -rf /tmp/chatgpt-root
+          mkdir -p /tmp/chatgpt-root
+          dpkg-deb --extract /tmp/chatgpt_amd64.deb /tmp/chatgpt-root
+          echo '--- executable candidates ---'
+          find /tmp/chatgpt-root -type f -perm /111 -printf '%p\n' | sort | tee /tmp/chatgpt-executables.txt
+          echo '--- codex/chatgpt paths ---'
+          find /tmp/chatgpt-root -type f \( -iname '*codex*' -o -iname '*chatgpt*' \) -printf '%p\n' | sort | tee /tmp/chatgpt-interesting.txt
+          test -n "$(cat /tmp/chatgpt-executables.txt)"
+          test -n "$(grep -Ei 'chatgpt|codex' /tmp/chatgpt-interesting.txt | head -1)"
+      - name: Verify project Linux Codex discovery covers desktop-managed path
+        run: |
+          grep -F ".local', 'bin', 'codex" src/app-server.mjs
+          grep -F "CODEX_CLI_PATH" src/app-server.mjs
