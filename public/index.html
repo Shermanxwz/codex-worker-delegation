@@ -24,7 +24,16 @@
   </section>
 
   <section class="card">
-    <div class="section-head"><div><h2>New API / 第三方模型</h2><p class="muted">API Key 仅写入本项目加密 vault；Codex 只拿本地 gateway token，不修改 ChatGPT OAuth/auth.json。</p></div><button id="refreshCatalog" class="secondary">刷新模型目录</button></div>
+    <div class="section-head"><div><h2>Provider 共存状态</h2><p class="muted">直接读取 Codex <code>account/read</code> 与 New API 状态。两边是独立凭证，不是二选一开关。</p></div><button id="refreshCatalog" class="secondary">刷新状态 / 模型</button></div>
+    <div class="coexist-grid">
+      <div class="provider-status"><span class="status-dot" id="officialDot"></span><div><b>Official ChatGPT</b><div id="officialState" class="muted">检测中…</div></div></div>
+      <div class="provider-status"><span class="status-dot" id="thirdDot"></span><div><b>New API</b><div id="thirdState" class="muted">检测中…</div></div></div>
+      <div class="provider-status coexist-summary"><span class="status-dot" id="coexistDot"></span><div><b>共存验证</b><div id="coexistState" class="muted">检测中…</div></div></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="section-head"><div><h2>New API / 第三方模型</h2><p class="muted">API Key 仅写入本项目加密 vault；Codex 只拿本地 gateway token，不修改 ChatGPT OAuth/auth.json。</p></div></div>
     <div class="grid">
       <label>Base URL<input id="baseUrl" placeholder="https://api.example.com/v1"></label>
       <label>API Key<input id="apiKey" type="password" autocomplete="new-password" placeholder="只在首次或更换时填写"></label>
