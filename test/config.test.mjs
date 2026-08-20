@@ -32,6 +32,18 @@ test('install adds only namespaced provider and current auto-discovered agent fi
   assert.doesNotMatch(worker,/model_provider/); assert.doesNotMatch(verifier,/model_provider/);
 });
 
+test('install preserves an existing auth.json byte-for-byte',async(t)=>{
+  const env=await tempEnv(t);await fs.mkdir(env.CODEX_HOME,{recursive:true});
+  await fs.writeFile(path.join(env.CODEX_HOME,'config.toml'),'model_provider = "openai"\nmodel = "official"\n');
+  const authPath=path.join(env.CODEX_HOME,'auth.json');
+  const sentinel=Buffer.from('{"OPENAI_API_KEY":null,"tokens":{"access_token":"DO-NOT-TOUCH"}}\n','utf8');
+  await fs.writeFile(authPath,sentinel,{mode:0o600});
+  const before=await fs.readFile(authPath);
+  await new CodexConfigManager({env,gatewayBaseUrl:'http://127.0.0.1:8788/v1'}).install();
+  const after=await fs.readFile(authPath);
+  assert.deepEqual(after,before);
+});
+
 test('restore official returns the original top-level selector after an explicit legacy switch', async (t) => {
   const env=await tempEnv(t); await fs.mkdir(env.CODEX_HOME,{recursive:true});
   await fs.writeFile(path.join(env.CODEX_HOME,'config.toml'),'model_provider = "openai"\nmodel = "gpt-official"\n');
