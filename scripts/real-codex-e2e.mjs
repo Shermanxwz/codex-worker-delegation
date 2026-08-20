@@ -101,12 +101,13 @@ try {
 
   console.log(JSON.stringify({ok:true,codexBinary,visibleCodexModels:codexModels.length,plugin,chatFallback:'ok',nativeResponses:'ok',authNoFallback:'ok',officialAuthIsolation:'ok'}));
 } finally {
-  await new Promise((r)=>app?.server?.close(()=>r())).catch(()=>{});
-  await new Promise((r)=>upstream?.close(()=>r())).catch(()=>{});
+  await closeServer(app?.server);
+  await closeServer(upstream);
   await fs.rm(tmp,{recursive:true,force:true});
 }
 
 function assertRun(result,sentinel,label){if(result.timedOut)throw new Error(`${label}: codex exec timed out\nSTDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`);if(result.code!==0)throw new Error(`${label}: codex exec failed (${result.code})\nSTDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`);if(!result.stdout.includes(sentinel)&&!result.stderr.includes(sentinel))throw new Error(`${label}: sentinel ${sentinel} missing\nSTDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`)}
 async function listen(server){await new Promise((r)=>server.listen(0,'127.0.0.1',r));return server.address().port}
-async function freePort(){const s=http.createServer();const p=await listen(s);await new Promise((r)=>s.close(r));return p}
+async function freePort(){const s=http.createServer();const p=await listen(s);await closeServer(s);return p}
+async function closeServer(server){if(!server||!server.listening)return;await new Promise((resolve)=>server.close(()=>resolve()))}
 async function run(cmd,args,env,timeoutMs){return new Promise((resolve,reject)=>{const p=spawn(cmd,args,{env,cwd:repoRoot,stdio:['pipe','pipe','pipe']});let stdout='',stderr='',timedOut=false;const timer=setTimeout(()=>{timedOut=true;p.kill('SIGTERM');setTimeout(()=>p.kill('SIGKILL'),1500).unref()},timeoutMs);p.stdout.on('data',(c)=>stdout+=c);p.stderr.on('data',(c)=>stderr+=c);p.on('error',reject);p.on('close',(code)=>{clearTimeout(timer);resolve({code,stdout,stderr,timedOut})});p.stdin.end()})}
