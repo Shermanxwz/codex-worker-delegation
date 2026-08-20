@@ -10,28 +10,31 @@ async function tempEnv(t) {
   t.after(()=>fs.rm(dir,{recursive:true,force:true}));
   return { CODEX_HOME:path.join(dir,'.codex'), CWD_DATA_DIR:path.join(dir,'data') };
 }
+const profile=(mainSource='official',main='gpt-official',workerSource='third_party',worker='worker-x',verifierSource='official',verifier='verify-official')=>({main:{source:mainSource,model:main},worker:{source:workerSource,model:worker},verifier:{source:verifierSource,model:verifier}});
 
-test('install adds namespaced provider/roles and restore returns original official selection', async (t) => {
+test('install adds isolated provider and lets every role choose official or third-party independently', async (t) => {
   const env=await tempEnv(t); await fs.mkdir(env.CODEX_HOME,{recursive:true});
-  const original = 'model_provider = "openai"\nmodel = "gpt-official"\n\n[features]\nweb_search = true\n\n[model_providers.keep_me]\nbase_url = "https://keep"\n';
+  const original = 'model_provider = "openai"\nmodel = "gpt-old"\n\n[features]\nweb_search = true\n\n[model_providers.keep_me]\nbase_url = "https://keep"\n';
   await fs.writeFile(path.join(env.CODEX_HOME,'config.toml'),original);
   const m=new CodexConfigManager({env,gatewayBaseUrl:'http://127.0.0.1:8788/v1'});
-  const snap=await m.install({workerModel:'worker-x',verifierModel:'verify-x'});
+  const snap=await m.install({profile:profile()});
   let text=await m.read();
   assert.match(text,/\[model_providers\.codex_worker_gateway\]/);
   assert.match(text,/\[agents\.cwd-worker\]/);
   assert.match(text,/\[model_providers\.keep_me\]/);
-  assert.match(text,/model_provider = "openai"/);
-  await m.activateThirdPartyMain('main-x'); text=await m.read();
-  assert.match(text,/^model_provider = "codex_worker_gateway"/m);
-  assert.match(text,/^model = "main-x"/m);
+  assert.match(text,/^model_provider = "openai"/m);
+  assert.match(text,/^model = "gpt-official"/m);
+  assert.match(await fs.readFile(path.join(env.CODEX_HOME,'cwd-worker.config.toml'),'utf8'),/model_provider = "codex_worker_gateway"/);
+  assert.match(await fs.readFile(path.join(env.CODEX_HOME,'cwd-verifier.config.toml'),'utf8'),/model_provider = "openai"/);
+  await m.applyProfile(profile('third_party','main-third','official','worker-official','third_party','verify-third'));
+  text=await m.read(); assert.match(text,/^model_provider = "codex_worker_gateway"/m); assert.match(text,/^model = "main-third"/m);
+  assert.match(await fs.readFile(path.join(env.CODEX_HOME,'cwd-worker.config.toml'),'utf8'),/model_provider = "openai"/);
   await m.restoreOfficial(snap.originalTopLevel); text=await m.read();
-  assert.match(text,/^model_provider = "openai"/m); assert.match(text,/^model = "gpt-official"/m);
-  assert.match(text,/\[model_providers\.keep_me\]/);
+  assert.match(text,/^model_provider = "openai"/m); assert.match(text,/^model = "gpt-old"/m); assert.match(text,/\[model_providers\.keep_me\]/);
 });
 
 test('restore removes top-level selector when user had none', async (t) => {
   const env=await tempEnv(t); await fs.mkdir(env.CODEX_HOME,{recursive:true}); await fs.writeFile(path.join(env.CODEX_HOME,'config.toml'),'[features]\nfoo = true\n');
-  const m=new CodexConfigManager({env}); const snap=await m.install({workerModel:'x'}); await m.activateThirdPartyMain('x'); await m.restoreOfficial(snap.originalTopLevel);
+  const m=new CodexConfigManager({env}); const snap=await m.install({profile:profile('third_party','x','third_party','x','third_party','x')}); await m.restoreOfficial(snap.originalTopLevel);
   const text=await m.read(); assert.doesNotMatch(text,/^model_provider\s*=/m); assert.doesNotMatch(text,/^model\s*=/m); assert.match(text,/\[features\]/);
 });

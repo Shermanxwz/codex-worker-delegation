@@ -1,5 +1,6 @@
 import { endpoints, providerHeaders, unsupportedEndpoint } from './provider.mjs';
 import { responsesToChat, convertChatSse, chatJsonToResponses } from './translate.mjs';
+import { activeProfile } from './store.mjs';
 
 async function readErrorBody(response) { try { return await response.clone().text(); } catch { return ''; } }
 
@@ -13,7 +14,8 @@ export class ResponsesGateway {
     const token = await this.store.ensureGatewayToken();
     if ((req.headers.authorization || '') !== `Bearer ${token}`) return json(res, 401, { error: { message: 'Invalid local gateway token', type: 'authentication_error' } });
     const apiKey = provider.apiKeyCipher ? await this.vault.decrypt(provider.apiKeyCipher) : '';
-    const model = body.model || state.models.main || state.models.worker;
+    const profile = activeProfile(state);
+    const model = body.model || profile?.main?.model || profile?.worker?.model;
     if (!model) return json(res, 400, { error: { message: 'Model is required', type: 'invalid_request_error' } });
     body = { ...body, model };
     const ep = endpoints(provider.baseUrl);

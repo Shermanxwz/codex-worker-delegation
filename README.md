@@ -1,180 +1,159 @@
 # Codex Worker Delegation
 
-**Linux ChatGPT / Codex native subagent control plane + third-party model coexistence gateway.**
+A Codex-native Linux control plane for **explicit per-role model selection**, native subagent delegation, and third-party OpenAI-compatible model coexistence without replacing the user's official ChatGPT login.
 
-This repository is a Codex-native redesign of `openclaw-worker-delegation`. It deliberately does **not** recreate a parallel “worker framework”. Current Codex already has native Subagents / Multi-Agent V2, custom agent roles, plugin skills, MCP servers, hooks, and a plugin marketplace. This project composes with those primitives instead.
+## Design target
 
-## What it gives you
+This project integrates with the same Codex primitives used by rich Codex clients rather than building a second worker runtime:
 
-- **Official ChatGPT login stays intact.** The built-in `openai` provider, `auth.json`, OS keyring, ChatGPT backend URL, and official credentials are outside this project's write set.
-- **Official and third-party models coexist.** Keep the root Codex thread on official ChatGPT while `cwd-worker` / `cwd-verifier` use your New API, or switch the root to the third-party gateway from the Web UI and restore the original official selection with one click.
-- **Automatic protocol routing.** Codex itself speaks the current supported Responses wire API. The local gateway accepts `/v1/responses`, forwards native Responses providers directly, or automatically converts to `/v1/chat/completions` when the upstream model only exposes Chat Completions.
-- **Per-model detection cache.** `auto` detection is model-scoped. Endpoint-not-supported errors trigger chat fallback; authentication, quota, model, and validation errors are not silently misclassified.
-- **Native Codex workers.** The plugin uses current native `spawn_agent` / subagent orchestration, custom `cwd-worker` and `cwd-verifier` roles, and a skill that tells Codex when to use them.
-- **Native policy hook.** `PreToolUse` receives Codex's actual `agent_id` / `agent_type`, so the root and subagents can be governed differently.
-- **Simple local Web UI.** Mode selection, New API URL/key/model settings, live protocol probe, integration install/refresh, third-party Main activation, and official-Main restore are all in one page.
-- **No third-party runtime dependencies.** Node.js only.
+- `codex app-server` JSON-RPC for `model/list`, marketplace and plugin installation;
+- the Codex universal plugin format (Skill + MCP + Hook);
+- native subagents / custom agent roles;
+- a local Responses provider that Codex can use beside the built-in `openai` provider;
+- a compatibility gateway that detects native `/v1/responses` support and falls back to `/v1/chat/completions` only for endpoint-incompatibility signals.
 
-## Delegation modes
+The built-in `openai` provider, ChatGPT login, `auth.json`, keyring and ChatGPT tokens are outside the project's write set.
 
-| Mode | Root agent | Native subagents |
-|---|---|---|
-| `AUTO` | Normal Codex behavior | Codex/skill may spawn workers when useful |
-| `DELEGATE` | Coordination tools only | Body-work is allowed; use `cwd-worker`, `explorer`, `cwd-verifier` |
-| `MAIN` | Performs work directly; new spawn is blocked | Existing subagent tool execution is frozen |
+## Web control plane
 
-The Web panel is authoritative. The skill explicitly tells the model not to change mode just to bypass a denied tool.
-
-## Architecture
-
-```text
-Linux ChatGPT / Codex
-        |
-        | universal plugin
-        |-- Skill: native delegation guidance
-        |-- MCP: read-only delegation_status
-        `-- PreToolUse hook: root/subagent policy
-        |
-        | Codex Responses wire API
-        v
-127.0.0.1:8788
-Codex Worker Delegation
-        |-- Web control plane
-        |-- encrypted local state
-        |-- namespaced Codex config integration
-        `-- /v1/responses compatibility gateway
-                  |
-                  | protocol=auto
-                  |-- native /v1/responses  -> pass-through
-                  `-- /v1/chat/completions -> Responses translation
-                                      |
-                                      v
-                                  Your New API
-```
-
-## Install
-
-Requirements: Linux, Node.js 20+ (Node 22+ recommended), and a current Codex build with the plugin commands.
+Start the project:
 
 ```bash
-git clone https://github.com/Shermanxwz/codex-worker-delegation.git
-cd codex-worker-delegation
 npm run check
 npm test
-./scripts/install.sh
 npm start
 ```
 
-Then open `http://127.0.0.1:8788`:
+Open `http://127.0.0.1:8788`.
 
-1. Enter your New API base URL. Root URLs, `/v1`, `/v1/responses`, and `/v1/chat/completions` forms are normalized.
-2. Enter the API key once, choose `Auto`, and set Main / Worker / Verifier model names.
-3. Save, then click **真实探测 Worker 模型** if you want an explicit live capability probe.
-4. Click **安装/刷新原生集成**. This adds only `model_providers.codex_worker_gateway` and the `cwd-worker` / `cwd-verifier` roles.
-5. Keep Main on official ChatGPT (recommended) or click **Main 使用第三方**. **Main 恢复官方 ChatGPT** restores the original top-level provider/model values captured at install time.
-6. When Codex asks you to review the bundled hook, review and trust it if you want `DELEGATE` / `MAIN` tool enforcement. The project never bypasses Codex hook trust.
+Everything intended for normal use is available from the Web UI:
 
-### New API examples
+1. Configure a New API base URL/key and `Auto`, `Responses`, or `Chat` mode.
+2. Refresh model catalogs. Official models come from **`codex app-server model/list`**. Third-party models come from **New API `/v1/models`**.
+3. Configure a separate model topology for each delegation mode:
+   - `AUTO`: Main + Worker + Verifier;
+   - `WORKER / DELEGATE`: Main + Worker + Verifier;
+   - `MAIN`: only Main is active and needs user selection; inactive role placeholders never affect the other modes.
+4. Every visible role independently chooses either **ChatGPT / Codex official** or **New API third-party**, plus an explicit model id. The UI also shows Codex metadata such as default model, reasoning efforts and Multi-Agent version when available.
+5. Click **安装 / 刷新原生集成**. The Web server uses the native App Server marketplace/plugin APIs and then atomically applies the active mode's provider/model topology.
+6. Switching mode applies that mode's saved topology. Nothing is hidden behind an implicit worker-model choice.
 
-All of these are accepted as the base URL:
+If a non-standard New API does not implement `/v1/models`, the model input still accepts a manual model id; auto-discovery remains the normal path.
 
-```text
-https://new-api.example.com
-https://new-api.example.com/v1
-https://new-api.example.com/v1/responses
-https://new-api.example.com/v1/chat/completions
-```
+## Model coexistence
 
-`protocol = auto` first uses the *real Codex request* against Responses. Only an endpoint-level unsupported signal falls back to Chat Completions, then the choice is cached for that model.
-
-## Official login isolation
-
-The generated Codex integration looks conceptually like this:
-
-```toml
-[model_providers.codex_worker_gateway]
-base_url = "http://127.0.0.1:8788/v1"
-wire_api = "responses"
-
-[model_providers.codex_worker_gateway.auth]
-command = "cat"
-args = ["~/.local/share/codex-worker-delegation/gateway.token"]
-```
-
-The local bearer token is **not** your New API key. Your upstream key is AES-256-GCM encrypted in the project's private data directory. The third-party key is never written to Codex config.
-
-Custom agent role files select the gateway independently, which is what makes this possible:
+Example topology:
 
 ```text
-Official ChatGPT root thread
-        +
-third-party cwd-worker subagent
-        +
-third-party cwd-verifier subagent
+WORKER / DELEGATE
+
+Main      -> ChatGPT / Codex -> gpt-5.6-sol
+Worker    -> New API         -> third-party-coder
+Verifier  -> ChatGPT / Codex -> gpt-5.6-sol
 ```
 
-No logout/login switch is required.
-
-## Tests and verification
-
-Local test suite currently exercises:
-
-- URL/endpoint normalization;
-- native Responses detection;
-- chat-only fallback without masking auth/model errors;
-- Responses -> Chat request translation;
-- Chat SSE -> Codex Responses SSE text and function-call output;
-- encrypted Web provider storage;
-- Codex config preservation and exact official provider/model restoration;
-- real standalone hook process behavior for root vs subagent;
-- bundled MCP initialize/list/call flow;
-- full localhost HTTP E2E for native Responses and chat-only upstreams;
-- gateway bearer authentication.
-
-GitHub Actions additionally installs the **current official `@openai/codex` package**, installs this repository through the **official Codex marketplace/plugin manager**, and runs a real:
+Another mode can have a completely different topology:
 
 ```text
-codex exec
-  -> codex_worker_gateway /v1/responses
-  -> automatic 404 capability fallback
-  -> fake chat-only /v1/chat/completions upstream
-  -> translated Responses SSE
-  -> Codex final output
+MAIN
+
+Main      -> New API         -> third-party-reasoner
 ```
 
-This is intentionally separate from the unit suite so the repository validates both its own logic and the current Codex integration contract.
+Official selections use the built-in `openai` provider. Third-party selections use only the namespaced `codex_worker_gateway` provider. No logout/login switch is required.
+
+## Protocol routing
+
+Codex currently speaks the Responses wire protocol for custom providers. The gateway therefore always presents a standard `/v1/responses` surface to Codex and adapts the upstream internally:
+
+```text
+Codex
+  -> http://127.0.0.1:8788/v1/responses
+       -> upstream /v1/responses         (native when supported)
+       -> upstream /v1/chat/completions  (translated fallback)
+```
+
+`protocol=auto` uses the real request. Only endpoint-level incompatibility (for example 404/405/410/501 or an explicit unsupported-route response) triggers Chat Completions fallback. Authentication, quota, model and ordinary validation errors are not silently rerouted. Decisions are cached per model.
+
+Accepted New API URL forms include roots, `/v1`, `/v1/responses`, and `/v1/chat/completions`.
+
+## Native plugin
+
+The repository marketplace lives at `.agents/plugins/marketplace.json` and installs `plugins/codex-worker-delegation`.
+
+The plugin contributes:
+
+- a Skill describing the Web-authoritative delegation behavior;
+- a read-only MCP `delegation_status` tool;
+- a `PreToolUse` hook that uses Codex's agent identity fields to distinguish root and subagents.
+
+Delegation policy:
+
+| Mode | Root | Subagents |
+|---|---|---|
+| `AUTO` | normal Codex behavior | native subagents may be used when useful |
+| `DELEGATE` | coordination-only tools | body work allowed |
+| `MAIN` | performs work directly; spawning blocked | existing subagent tool execution is frozen |
+
+Hook trust remains controlled by Codex/user policy. This project does not bypass it.
 
 ## Security boundary
 
-Read [`docs/SECURITY.md`](docs/SECURITY.md). Important limitations:
+- Web binds to `127.0.0.1` by default. Non-loopback exposure requires `CWD_WEB_TOKEN` and should use TLS in front.
+- The upstream API key is encrypted at rest with AES-256-GCM under a local `0600` master key.
+- Codex receives a separate random local gateway bearer token, not the New API key.
+- `auth.json`, keyring data and the built-in `openai` provider are never written by this project.
+- Provider URLs containing embedded credentials are rejected; user-supplied `Authorization` headers are rejected.
+- `PreToolUse` is a Codex policy guardrail, not an OS sandbox.
 
-- `PreToolUse` is a Codex hook guardrail, not an OS sandbox.
-- Hosted/specialized tools that do not participate in `PreToolUse` cannot be blocked by this hook.
-- A compromised local user/process with access to the project's `0600` files is outside this control plane's threat model.
-- Non-loopback Web exposure requires `CWD_WEB_TOKEN` and should be behind TLS.
+See [`docs/SECURITY.md`](docs/SECURITY.md).
+
+## Verification contract
+
+`npm test` covers protocol normalization/detection, translation, encrypted state, per-mode topology migration, official/third-party role mixing, configuration restoration, real Hook and MCP subprocesses, model catalogs, Web APIs and localhost gateway flows.
+
+GitHub Actions additionally installs **`@openai/codex@latest`** on Ubuntu 24.04 and runs the actual binary through:
+
+```text
+codex app-server initialize
+  -> model/list
+  -> marketplace/add
+  -> plugin/install
+  -> plugin/installed
+
+codex exec
+  -> local Responses gateway
+  -> chat-only upstream (404 /responses -> chat fallback)
+  -> native Responses upstream (no chat fallback)
+  -> 401 upstream (must NOT fall back)
+```
+
+The E2E also verifies exact Main selector restoration and byte-for-byte preservation of a valid sentinel `auth.json`.
 
 ## Repository map
 
 ```text
-src/                    # control plane, vault, gateway, config integration
-public/                 # small responsive Web UI
-plugins/
-  codex-worker-delegation/
-    .codex-plugin/      # universal plugin manifest
-    skills/             # native delegation skill
-    hooks/              # PreToolUse policy hook
-    mcp/                # read-only status MCP server
-.agents/plugins/        # repo-local Codex marketplace
-scripts/                # install, checks, real-Codex E2E
-test/                   # unit + process + HTTP integration tests
-docs/                   # architecture and security boundary
+src/
+  codex-app-server.mjs   # native App Server JSON-RPC client
+  codex-config.mjs       # isolated provider/role topology integration
+  gateway.mjs            # Codex-facing Responses gateway
+  provider.mjs           # New API URL, model catalog and protocol detection
+  server.mjs             # Web/API control plane
+  store.mjs              # v2 mode-specific topology state
+public/                   # responsive local Web UI
+plugins/                  # universal Codex plugin
+scripts/                  # checks, install wrapper, real-Codex E2E
+
+test/                     # unit/process/HTTP integration tests
 ```
 
-## Why this is different from the OpenClaw version
+## Requirements
 
-The old project needed an external controller to create and police a worker abstraction. Current Codex already owns agent spawning, context forking, role selection, model overrides, follow-up messaging, waiting, interruption, and agent lifecycle. Reusing those mechanisms is more native, more visible inside the ChatGPT/Codex UI, and less likely to drift as Codex evolves.
+- Linux
+- Node.js 20+ (22+ recommended)
+- a current Codex build exposing `codex app-server` and the plugin APIs
 
-This project therefore owns only the pieces Codex does not natively solve for this use case: **user-controlled delegation policy, provider coexistence, third-party protocol adaptation, secure local configuration, and a simple Web control plane.**
+`CODEX_BIN=/absolute/path/to/codex` can be set when the Linux ChatGPT/Codex installation does not expose `codex` on `PATH`.
 
 ## License
 

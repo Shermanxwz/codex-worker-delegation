@@ -12,14 +12,14 @@ export function endpoints(baseUrl) {
   let p = u.pathname.replace(/\/+$/, '');
   if (p.endsWith('/v1/responses')) {
     const root = p.slice(0, -'/responses'.length);
-    return { responses: withPath(u, p), chat: withPath(u, `${root}/chat/completions`), apiRoot: withPath(u, root) };
+    return { responses: withPath(u, p), chat: withPath(u, `${root}/chat/completions`), models: withPath(u, `${root}/models`), apiRoot: withPath(u, root) };
   }
   if (p.endsWith('/v1/chat/completions')) {
     const root = p.slice(0, -'/chat/completions'.length);
-    return { responses: withPath(u, `${root}/responses`), chat: withPath(u, p), apiRoot: withPath(u, root) };
+    return { responses: withPath(u, `${root}/responses`), chat: withPath(u, p), models: withPath(u, `${root}/models`), apiRoot: withPath(u, root) };
   }
   if (!p.endsWith('/v1')) p = `${p}/v1`.replace(/^\/\//, '/');
-  return { responses: withPath(u, `${p}/responses`), chat: withPath(u, `${p}/chat/completions`), apiRoot: withPath(u, p) };
+  return { responses: withPath(u, `${p}/responses`), chat: withPath(u, `${p}/chat/completions`), models: withPath(u, `${p}/models`), apiRoot: withPath(u, p) };
 }
 
 function withPath(url, pathname) { const u = new URL(url); u.pathname = pathname || '/'; return u.toString(); }
@@ -27,6 +27,29 @@ export function unsupportedEndpoint(status, bodyText = '') { return UNSUPPORTED_
 
 function authHeaders(apiKey, extraHeaders = {}) {
   return { 'content-type': 'application/json', ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}), ...extraHeaders };
+}
+
+export async function listProviderModels({ baseUrl, apiKey, timeoutMs = 10_000, fetchImpl = fetch, extraHeaders = {} }) {
+  const ep = endpoints(baseUrl);
+  const response = await fetchImpl(ep.models, {
+    method: 'GET',
+    headers: authHeaders(apiKey, extraHeaders),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  const text = await response.text();
+  if (!response.ok) throw new Error(`GET ${new URL(ep.models).pathname} returned ${response.status}: ${trimError(text)}`);
+  let body;
+  try { body = JSON.parse(text); } catch { throw new Error('Provider /v1/models did not return JSON'); }
+  const raw = Array.isArray(body?.data) ? body.data : Array.isArray(body?.models) ? body.models : [];
+  const seen = new Set();
+  const data = [];
+  for (const item of raw) {
+    const id = typeof item === 'string' ? item : item?.id || item?.model || item?.name;
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    data.push({ id: String(id), displayName: String(item?.display_name || item?.displayName || item?.name || id), ownedBy: item?.owned_by || item?.ownedBy || null });
+  }
+  return { endpoint: ep.models, data };
 }
 
 export async function probeProvider({ baseUrl, apiKey, model, timeoutMs = 10000, fetchImpl = fetch, extraHeaders = {} }) {

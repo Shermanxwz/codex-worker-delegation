@@ -3,6 +3,7 @@ import path from 'node:path';
 import { codexHome, gatewayTokenPath } from './paths.mjs';
 
 const PROVIDER = 'codex_worker_gateway';
+const OFFICIAL_PROVIDER = 'openai';
 const MANAGED_SECTIONS = new Set([
   `model_providers.${PROVIDER}`, `model_providers.${PROVIDER}.auth`, 'agents.cwd-worker', 'agents.cwd-verifier'
 ]);
@@ -54,8 +55,15 @@ function removeTopLevel(text, key) {
 }
 
 function managedBlock({ baseUrl, tokenFile, workerFile, verifierFile }) {
-  return `\n\n# --- codex-worker-delegation managed integration ---\n[model_providers.${PROVIDER}]\nname = "Codex Worker Delegation Gateway"\nbase_url = ${quote(baseUrl)}\nwire_api = "responses"\nrequest_max_retries = 0\nstream_max_retries = 0\nstream_idle_timeout_ms = 30000\n\n[model_providers.${PROVIDER}.auth]\ncommand = "cat"\nargs = [${quote(tokenFile)}]\n\n[agents.cwd-worker]\ndescription = "Native Codex body-work subagent routed through the configured third-party provider."\nconfig_file = ${quote(workerFile)}\n\n[agents.cwd-verifier]\ndescription = "Independent verification subagent; use after meaningful implementation work."\nconfig_file = ${quote(verifierFile)}\n# --- end codex-worker-delegation managed integration ---\n`;
+  return `\n\n# --- codex-worker-delegation managed integration ---\n[model_providers.${PROVIDER}]\nname = "Codex Worker Delegation Gateway"\nbase_url = ${quote(baseUrl)}\nwire_api = "responses"\nrequest_max_retries = 0\nstream_max_retries = 0\nstream_idle_timeout_ms = 30000\n\n[model_providers.${PROVIDER}.auth]\ncommand = "cat"\nargs = [${quote(tokenFile)}]\n\n[agents.cwd-worker]\ndescription = "Native Codex body-work subagent with an explicit Web-selected model/provider."\nconfig_file = ${quote(workerFile)}\n\n[agents.cwd-verifier]\ndescription = "Independent verification subagent with an explicit Web-selected model/provider."\nconfig_file = ${quote(verifierFile)}\n# --- end codex-worker-delegation managed integration ---\n`;
 }
+
+function providerFor(selection) { return selection?.source === 'third_party' ? PROVIDER : OFFICIAL_PROVIDER; }
+function validateSelection(selection, role) {
+  if (!selection?.model?.trim()) throw new Error(`${role} model is required`);
+  if (!['official', 'third_party'].includes(selection.source)) throw new Error(`${role} source must be official or third_party`);
+}
+function roleFile(selection) { return `model = ${quote(selection.model)}\nmodel_provider = ${quote(providerFor(selection))}\n`; }
 
 export class CodexConfigManager {
   constructor({ env = process.env, gatewayBaseUrl = 'http://127.0.0.1:8788/v1' } = {}) {
@@ -63,25 +71,22 @@ export class CodexConfigManager {
   }
   async read() { try { return await fs.readFile(this.file, 'utf8'); } catch (e) { if (e.code === 'ENOENT') return ''; throw e; } }
 
-  async install({ workerModel, verifierModel = workerModel }) {
+  async install({ profile }) {
+    validateSelection(profile?.main, 'main'); validateSelection(profile?.worker, 'worker'); validateSelection(profile?.verifier, 'verifier');
     await fs.mkdir(this.home, { recursive: true, mode: 0o700 });
     const before = await this.read();
     const originalTopLevel = inspectTopLevel(before);
-    const workerFile = path.join(this.home, 'cwd-worker.config.toml');
-    const verifierFile = path.join(this.home, 'cwd-verifier.config.toml');
-    await fs.writeFile(workerFile, `model = ${quote(workerModel)}\nmodel_provider = ${quote(PROVIDER)}\n`, { mode: 0o600 });
-    await fs.writeFile(verifierFile, `model = ${quote(verifierModel)}\nmodel_provider = ${quote(PROVIDER)}\n`, { mode: 0o600 });
-    const base = removeManagedSections(before);
-    const next = base + managedBlock({ baseUrl: this.gatewayBaseUrl, tokenFile: gatewayTokenPath(this.env), workerFile, verifierFile });
+    await this.#writeRoleFiles(profile);
+    const next = this.#compose(before, profile);
     await this.#backupAndWrite(before, next);
     return { originalTopLevel };
   }
 
-  async activateThirdPartyMain(model) {
-    let text = await this.read();
-    text = setTopLevel(text, 'model_provider', quote(PROVIDER));
-    text = setTopLevel(text, 'model', quote(model));
-    await this.#backupAndWrite(await this.read(), text);
+  async applyProfile(profile) {
+    validateSelection(profile?.main, 'main'); validateSelection(profile?.worker, 'worker'); validateSelection(profile?.verifier, 'verifier');
+    const before = await this.read();
+    await this.#writeRoleFiles(profile);
+    await this.#backupAndWrite(before, this.#compose(before, profile));
   }
 
   async restoreOfficial(originalTopLevel = {}) {
@@ -91,6 +96,22 @@ export class CodexConfigManager {
       else text = removeTopLevel(text, key);
     }
     await this.#backupAndWrite(await this.read(), text);
+  }
+
+  #compose(before, profile) {
+    const workerFile = path.join(this.home, 'cwd-worker.config.toml');
+    const verifierFile = path.join(this.home, 'cwd-verifier.config.toml');
+    let next = removeManagedSections(before) + managedBlock({ baseUrl: this.gatewayBaseUrl, tokenFile: gatewayTokenPath(this.env), workerFile, verifierFile });
+    next = setTopLevel(next, 'model_provider', quote(providerFor(profile.main)));
+    next = setTopLevel(next, 'model', quote(profile.main.model));
+    return next;
+  }
+
+  async #writeRoleFiles(profile) {
+    const workerFile = path.join(this.home, 'cwd-worker.config.toml');
+    const verifierFile = path.join(this.home, 'cwd-verifier.config.toml');
+    await fs.writeFile(workerFile, roleFile(profile.worker), { mode: 0o600 });
+    await fs.writeFile(verifierFile, roleFile(profile.verifier), { mode: 0o600 });
   }
 
   async #backupAndWrite(before, next) {
@@ -104,3 +125,4 @@ export class CodexConfigManager {
 }
 
 export const CODEX_GATEWAY_PROVIDER_ID = PROVIDER;
+export const CODEX_OFFICIAL_PROVIDER_ID = OFFICIAL_PROVIDER;

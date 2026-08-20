@@ -1,17 +1,21 @@
 # Validation contract
 
-The repository is not considered release-ready only because its unit tests pass. CI also installs the current official `@openai/codex` package on Linux, adds this repository through the official Codex marketplace/plugin manager, and runs a real `codex exec` request through the local Responses gateway against a deterministic chat-only upstream.
+The repository is not considered release-ready because unit tests pass. The current `@openai/codex@latest` package must also pass a real Linux integration run.
 
-The remote E2E must prove all of the following in one flow:
+The remote E2E proves:
 
-1. current Codex accepts the repository marketplace and plugin manifest;
-2. the native plugin is installable through `codex plugin`;
-3. the generated custom provider configuration is accepted by current Codex;
-4. Codex sends a Responses request to the local gateway;
-5. a real 404 from upstream `/v1/responses` is classified as endpoint incompatibility rather than an authentication/model failure;
-6. the gateway translates the request to `/v1/chat/completions`;
-7. the returned Chat SSE is translated back into Codex-consumable Responses SSE;
-8. `codex exec` completes with the deterministic sentinel;
-9. per-model protocol detection is cached as `chat`.
+1. `codex app-server` accepts the initialize/initialized handshake;
+2. `model/list` returns a non-empty current Codex catalog;
+3. the repository marketplace is accepted through `marketplace/add`;
+4. the plugin installs through `plugin/install` and is reported installed/enabled by `plugin/installed`;
+5. current Codex accepts the generated custom Responses provider configuration;
+6. a real `codex exec` request reaches the local gateway;
+7. an upstream `/v1/responses` 404 is classified as endpoint incompatibility and falls back exactly once to `/v1/chat/completions`;
+8. Chat SSE is translated back into Codex-consumable Responses SSE and `codex exec` completes with the deterministic sentinel;
+9. a second real `codex exec` uses native Responses without touching Chat Completions;
+10. an upstream 401 remains a Responses/authentication failure and never falls back to Chat;
+11. protocol decisions are cached per model;
+12. the exact pre-install Main selector can be restored;
+13. a syntactically valid sentinel `auth.json` remains byte-for-byte unchanged.
 
-This validation intentionally uses no external model key and therefore tests the integration contract deterministically.
+CI runs the Node/process/HTTP suite on Node 20, 22 and 24, then runs this E2E on Ubuntu 24.04 with the current official Codex package.

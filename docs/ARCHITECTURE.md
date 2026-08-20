@@ -2,27 +2,45 @@
 
 ## Principle
 
-Codex Worker Delegation does not replace Codex orchestration. It composes with current Codex native Subagents/Multi-Agent V2 and the universal plugin system.
+Codex Worker Delegation composes with Codex rather than replacing its orchestration. Codex owns threads, native subagents, tool execution and plugin runtime. This project owns only user-visible delegation policy, explicit model topology, third-party protocol adaptation and local configuration.
 
-1. **Native plugin**: skill instructions, a read-only MCP status tool, and a `PreToolUse` hook.
-2. **Local control plane**: loopback Web UI and state store.
-3. **Responses compatibility gateway**: Codex always speaks Responses to `codex_worker_gateway`; the gateway either forwards native `/v1/responses` or translates to `/v1/chat/completions`.
-4. **Codex config integration**: adds only a namespaced provider and custom subagent roles. Official authentication is outside this project's write set.
+## Control surfaces
 
-## Official + third-party coexistence
+1. **Web control plane** stores an independent Main/Worker/Verifier topology for `AUTO`, `DELEGATE` and `MAIN`.
+2. **Codex App Server client** uses the current rich-client JSON-RPC surface. `model/list` is the source of truth for the currently available Codex catalog; marketplace/plugin endpoints install the bundled plugin.
+3. **Codex config integration** adds a single namespaced Responses provider and two custom agent-role files. Each role file selects either the built-in `openai` provider or the namespaced gateway provider.
+4. **Responses compatibility gateway** accepts Codex Responses requests and either forwards `/v1/responses` or translates to `/v1/chat/completions`.
+5. **Universal plugin** contributes the delegation Skill, a redacted status MCP tool and the `PreToolUse` policy hook.
 
-The built-in `openai` provider and ChatGPT login are never redefined. Worker and verifier role files can point to `codex_worker_gateway` even while the root thread continues to use official ChatGPT. The Web UI can optionally select the gateway for the root model and later restore the exact original top-level `model` / `model_provider` values captured at installation.
+## Mode-specific topology
 
-## Protocol auto-detection
+Profiles are not global. Example:
 
-For `protocol=auto`, the gateway first sends the real Codex request to the upstream Responses endpoint. Only endpoint-level unsupported signals (404/405/410/501 or explicit unsupported-route messages) trigger Chat Completions translation. Authentication, model, quota, and validation errors are not silently rerouted. A successful decision is cached per model and can be explicitly re-probed from the Web UI.
+```text
+AUTO
+  Main=official/A
+  Worker=third_party/B
+  Verifier=official/A
 
-## Delegation policy
+DELEGATE
+  Main=official/C
+  Worker=third_party/D
+  Verifier=third_party/E
 
-`PreToolUse` currently includes native Codex `agent_id` and `agent_type`, so policy can distinguish the root from a spawned subagent.
+MAIN
+  Main=third_party/F
+```
 
-- AUTO: permit native behavior.
-- DELEGATE: root only gets coordination tools; subagents may execute.
-- MAIN: root may execute but cannot spawn new agents; existing subagent tool calls are denied.
+Switching mode applies the saved profile atomically. In `MAIN`, only Main is active; if inactive Worker/Verifier placeholders have never been configured they inherit Main solely to keep generated role files valid. This does not mutate the independent `AUTO` or `DELEGATE` profiles.
 
-Hosted tools that do not participate in `PreToolUse` remain outside this hook's enforcement boundary; this is a Codex hook-system limitation, not hidden by the project.
+## Official model catalog
+
+The Web server starts a short-lived `codex app-server --stdio` client, performs the documented initialize/initialized handshake, and pages `model/list`. When the user's Codex session has ChatGPT authentication, Codex itself controls its online model catalog; the project does not scrape the UI or maintain a hard-coded model list.
+
+## Provider coexistence
+
+Official selections always reference the built-in `openai` provider. Third-party selections reference `codex_worker_gateway`. The project never redefines `openai`, writes ChatGPT credentials, or sends the New API key to Codex.
+
+## Protocol detection
+
+For `auto`, the first real request for a model goes to upstream `/v1/responses`. Only endpoint-incompatibility signals allow fallback. The result is cached per model. 401/authentication, quota, model and ordinary validation errors remain Responses errors and do not probe Chat Completions.
