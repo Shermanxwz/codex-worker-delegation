@@ -12,14 +12,18 @@ export function endpoints(baseUrl) {
   let p = u.pathname.replace(/\/+$/, '');
   if (p.endsWith('/v1/responses')) {
     const root = p.slice(0, -'/responses'.length);
-    return { responses: withPath(u, p), chat: withPath(u, `${root}/chat/completions`), apiRoot: withPath(u, root) };
+    return { responses: withPath(u, p), chat: withPath(u, `${root}/chat/completions`), models: withPath(u, `${root}/models`), apiRoot: withPath(u, root) };
   }
   if (p.endsWith('/v1/chat/completions')) {
     const root = p.slice(0, -'/chat/completions'.length);
-    return { responses: withPath(u, `${root}/responses`), chat: withPath(u, p), apiRoot: withPath(u, root) };
+    return { responses: withPath(u, `${root}/responses`), chat: withPath(u, p), models: withPath(u, `${root}/models`), apiRoot: withPath(u, root) };
+  }
+  if (p.endsWith('/v1/models')) {
+    const root = p.slice(0, -'/models'.length);
+    return { responses: withPath(u, `${root}/responses`), chat: withPath(u, `${root}/chat/completions`), models: withPath(u, p), apiRoot: withPath(u, root) };
   }
   if (!p.endsWith('/v1')) p = `${p}/v1`.replace(/^\/\//, '/');
-  return { responses: withPath(u, `${p}/responses`), chat: withPath(u, `${p}/chat/completions`), apiRoot: withPath(u, p) };
+  return { responses: withPath(u, `${p}/responses`), chat: withPath(u, `${p}/chat/completions`), models: withPath(u, `${p}/models`), apiRoot: withPath(u, p) };
 }
 
 function withPath(url, pathname) { const u = new URL(url); u.pathname = pathname || '/'; return u.toString(); }
@@ -27,6 +31,27 @@ export function unsupportedEndpoint(status, bodyText = '') { return UNSUPPORTED_
 
 function authHeaders(apiKey, extraHeaders = {}) {
   return { 'content-type': 'application/json', ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}), ...extraHeaders };
+}
+
+export async function listProviderModels({ baseUrl, apiKey, timeoutMs = 10000, fetchImpl = fetch, extraHeaders = {} }) {
+  const ep = endpoints(baseUrl);
+  const response = await fetchImpl(ep.models, {
+    method: 'GET',
+    headers: authHeaders(apiKey, extraHeaders),
+    signal: AbortSignal.timeout(timeoutMs)
+  });
+  const text = await response.text();
+  if (!response.ok) throw new Error(`model listing failed (${response.status}): ${trimError(text)}`);
+  let parsed;
+  try { parsed = JSON.parse(text); } catch { throw new Error('model listing did not return JSON'); }
+  const rows = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.data) ? parsed.data : Array.isArray(parsed?.models) ? parsed.models : [];
+  const seen = new Set();
+  return rows.map((item) => {
+    const id = typeof item === 'string' ? item : item?.id || item?.name || item?.model;
+    if (!id || seen.has(id)) return null;
+    seen.add(id);
+    return { id: String(id), name: String(item?.display_name || item?.displayName || item?.name || id), ownedBy: item?.owned_by || item?.ownedBy || null };
+  }).filter(Boolean);
 }
 
 export async function probeProvider({ baseUrl, apiKey, model, timeoutMs = 10000, fetchImpl = fetch, extraHeaders = {} }) {
@@ -40,7 +65,6 @@ export async function probeProvider({ baseUrl, apiKey, model, timeoutMs = 10000,
   if (!unsupportedEndpoint(rr.status, rrText)) {
     return { protocol: 'responses', ok: false, endpoint: ep.responses, status: rr.status, error: trimError(rrText), endpointExists: true };
   }
-
   const chatBody = { model, messages: [{ role: 'user', content: 'Reply only OK' }], max_tokens: 1, stream: false };
   const cr = await fetchImpl(ep.chat, { ...common, body: JSON.stringify(chatBody) });
   const crText = await cr.text();

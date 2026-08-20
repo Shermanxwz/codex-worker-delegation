@@ -4,7 +4,10 @@ import { codexHome, gatewayTokenPath } from './paths.mjs';
 
 const PROVIDER = 'codex_worker_gateway';
 const MANAGED_SECTIONS = new Set([
-  `model_providers.${PROVIDER}`, `model_providers.${PROVIDER}.auth`, 'agents.cwd-worker', 'agents.cwd-verifier'
+  `model_providers.${PROVIDER}`,
+  `model_providers.${PROVIDER}.auth`,
+  'agents.cwd-worker',
+  'agents.cwd-verifier'
 ]);
 
 function quote(value) { return JSON.stringify(String(value)); }
@@ -53,28 +56,43 @@ function removeTopLevel(text, key) {
   }).join('\n').replace(/\n{3,}/g, '\n\n');
 }
 
-function managedBlock({ baseUrl, tokenFile, workerFile, verifierFile }) {
-  return `\n\n# --- codex-worker-delegation managed integration ---\n[model_providers.${PROVIDER}]\nname = "Codex Worker Delegation Gateway"\nbase_url = ${quote(baseUrl)}\nwire_api = "responses"\n\n[model_providers.${PROVIDER}.auth]\ncommand = "cat"\nargs = [${quote(tokenFile)}]\n\n[agents.cwd-worker]\ndescription = "Native Codex body-work subagent routed through the configured third-party provider."\nconfig_file = ${quote(workerFile)}\n\n[agents.cwd-verifier]\ndescription = "Independent verification subagent; use after meaningful implementation work."\nconfig_file = ${quote(verifierFile)}\n# --- end codex-worker-delegation managed integration ---\n`;
+function managedBlock({ baseUrl, tokenFile }) {
+  return `\n\n# --- codex-worker-delegation managed provider ---\n[model_providers.${PROVIDER}]\nname = "Codex Worker Delegation Gateway"\nbase_url = ${quote(baseUrl)}\nwire_api = "responses"\nrequires_openai_auth = false\n\n[model_providers.${PROVIDER}.auth]\ncommand = "cat"\nargs = [${quote(tokenFile)}]\n# --- end codex-worker-delegation managed provider ---\n`;
+}
+
+function workerRoleFile() {
+  return `name = "cwd-worker"\ndescription = "Execution worker managed by Codex Worker Delegation. Use for implementation and body work when the selected route uses the same provider as the root thread."\ndeveloper_instructions = "You are an implementation worker. Own the assigned files and task. Do not undo unrelated edits. Execute, test, and report concrete results. The parent thread remains the coordinator."\n`;
+}
+
+function verifierRoleFile() {
+  return `name = "cwd-verifier"\ndescription = "Independent verifier managed by Codex Worker Delegation. Use for review and validation after meaningful implementation work."\ndeveloper_instructions = "You are an independent verifier. Inspect and test the implementation, identify concrete regressions, and report evidence. Do not make implementation changes unless the parent explicitly reassigns you as a worker."\n`;
 }
 
 export class CodexConfigManager {
   constructor({ env = process.env, gatewayBaseUrl = 'http://127.0.0.1:8788/v1' } = {}) {
-    this.env = env; this.home = codexHome(env); this.file = path.join(this.home, 'config.toml'); this.gatewayBaseUrl = gatewayBaseUrl;
+    this.env = env;
+    this.home = codexHome(env);
+    this.file = path.join(this.home, 'config.toml');
+    this.agentsDir = path.join(this.home, 'agents');
+    this.gatewayBaseUrl = gatewayBaseUrl;
   }
+
   async read() { try { return await fs.readFile(this.file, 'utf8'); } catch (e) { if (e.code === 'ENOENT') return ''; throw e; } }
 
-  async install({ workerModel, verifierModel = workerModel }) {
+  async install() {
     await fs.mkdir(this.home, { recursive: true, mode: 0o700 });
+    await fs.mkdir(this.agentsDir, { recursive: true, mode: 0o700 });
     const before = await this.read();
     const originalTopLevel = inspectTopLevel(before);
-    const workerFile = path.join(this.home, 'cwd-worker.config.toml');
-    const verifierFile = path.join(this.home, 'cwd-verifier.config.toml');
-    await fs.writeFile(workerFile, `model = ${quote(workerModel)}\nmodel_provider = ${quote(PROVIDER)}\n`, { mode: 0o600 });
-    await fs.writeFile(verifierFile, `model = ${quote(verifierModel)}\nmodel_provider = ${quote(PROVIDER)}\n`, { mode: 0o600 });
-    const base = removeManagedSections(before);
-    const next = base + managedBlock({ baseUrl: this.gatewayBaseUrl, tokenFile: gatewayTokenPath(this.env), workerFile, verifierFile });
+    const next = removeManagedSections(before) + managedBlock({ baseUrl: this.gatewayBaseUrl, tokenFile: gatewayTokenPath(this.env) });
     await this.#backupAndWrite(before, next);
-    return { originalTopLevel };
+    await this.#writeRole(path.join(this.agentsDir, 'cwd-worker.toml'), workerRoleFile());
+    await this.#writeRole(path.join(this.agentsDir, 'cwd-verifier.toml'), verifierRoleFile());
+    await Promise.all([
+      fs.rm(path.join(this.home, 'cwd-worker.config.toml'), { force: true }),
+      fs.rm(path.join(this.home, 'cwd-verifier.config.toml'), { force: true })
+    ]);
+    return { originalTopLevel, providerId: PROVIDER, agents: ['cwd-worker', 'cwd-verifier'] };
   }
 
   async activateThirdPartyMain(model) {
@@ -91,6 +109,13 @@ export class CodexConfigManager {
       else text = removeTopLevel(text, key);
     }
     await this.#backupAndWrite(await this.read(), text);
+  }
+
+  async #writeRole(file, text) {
+    const tmp = `${file}.cwd.tmp`;
+    await fs.writeFile(tmp, text, { mode: 0o600 });
+    await fs.rename(tmp, file);
+    await fs.chmod(file, 0o600).catch(() => {});
   }
 
   async #backupAndWrite(before, next) {

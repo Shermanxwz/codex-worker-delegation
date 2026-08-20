@@ -1,9 +1,9 @@
 {
   "name": "codex-worker-delegation",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
-  "description": "Native Codex subagent delegation control plane and Responses compatibility gateway for third-party models.",
+  "description": "Native Codex delegation control plane for ChatGPT Linux with official/third-party model coexistence and Responses compatibility bridging.",
   "engines": {"node": ">=20"},
   "scripts": {
     "start": "node src/server.mjs",
