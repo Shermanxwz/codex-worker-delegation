@@ -54,7 +54,7 @@ function removeTopLevel(text, key) {
 }
 
 function managedBlock({ baseUrl, tokenFile, workerFile, verifierFile }) {
-  return `\n\n# --- codex-worker-delegation managed integration ---\n[model_providers.${PROVIDER}]\nname = "Codex Worker Delegation Gateway"\nbase_url = ${quote(baseUrl)}\nwire_api = "responses"\n\n[model_providers.${PROVIDER}.auth]\ncommand = "cat"\nargs = [${quote(tokenFile)}]\n\n[agents.cwd-worker]\ndescription = "Native Codex body-work subagent routed through the configured third-party provider."\nconfig_file = ${quote(workerFile)}\n\n[agents.cwd-verifier]\ndescription = "Independent verification subagent; use after meaningful implementation work."\nconfig_file = ${quote(verifierFile)}\n# --- end codex-worker-delegation managed integration ---\n`;
+  return `\n\n# --- codex-worker-delegation managed integration ---\n[model_providers.${PROVIDER}]\nname = "Codex Worker Delegation Gateway"\nbase_url = ${quote(baseUrl)}\nwire_api = "responses"\nrequest_max_retries = 0\nstream_max_retries = 0\nstream_idle_timeout_ms = 30000\n\n[model_providers.${PROVIDER}.auth]\ncommand = "cat"\nargs = [${quote(tokenFile)}]\n\n[agents.cwd-worker]\ndescription = "Native Codex body-work subagent routed through the configured third-party provider."\nconfig_file = ${quote(workerFile)}\n\n[agents.cwd-verifier]\ndescription = "Independent verification subagent; use after meaningful implementation work."\nconfig_file = ${quote(verifierFile)}\n# --- end codex-worker-delegation managed integration ---\n`;
 }
 
 export class CodexConfigManager {
