@@ -9,7 +9,7 @@ import { SecretVault } from '../src/vault.mjs';
 import { CodexConfigManager } from '../src/codex-config.mjs';
 
 const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'cwd-real-codex-'));
-const env = { ...process.env, CODEX_HOME: path.join(tmp, '.codex'), CWD_DATA_DIR: path.join(tmp, 'data') };
+const env = { ...process.env, CODEX_HOME: path.join(tmp, '.codex'), CWD_DATA_DIR: path.join(tmp, 'data'), RUST_BACKTRACE: '1' };
 let upstream, app;
 try {
   upstream = http.createServer(async (req, res) => {
@@ -54,7 +54,8 @@ try {
   app = createApp({ env });
   await new Promise((resolve) => app.server.listen(gatewayPort, '127.0.0.1', resolve));
   const codexBin = process.env.CODEX_BIN || path.resolve('node_modules/.bin/codex');
-  const result = await run(codexBin, ['exec', '--skip-git-repo-check', '--model', 'mock-codex-model', 'Reply exactly with the marker you receive from the model.'], env);
+  const result = await run(codexBin, ['exec', '--skip-git-repo-check', '--model', 'mock-codex-model', 'Reply exactly with the marker you receive from the model.'], env, 45000);
+  if (result.timedOut) throw new Error(`codex exec timed out\nSTDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`);
   if (result.code !== 0) throw new Error(`codex exec failed (${result.code})\nSTDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`);
   if (!result.stdout.includes('REAL_CODEX_E2E_OK') && !result.stderr.includes('REAL_CODEX_E2E_OK')) throw new Error(`sentinel missing\nSTDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`);
   const finalState = await store.read();
@@ -68,9 +69,10 @@ try {
 
 async function listen(server) { await new Promise((r) => server.listen(0, '127.0.0.1', r)); return server.address().port; }
 async function freePort() { const s = http.createServer(); const p = await listen(s); await new Promise((r) => s.close(r)); return p; }
-async function run(cmd, args, env) {
+async function run(cmd, args, env, timeoutMs) {
   return new Promise((resolve, reject) => {
-    const p = spawn(cmd, args, { env, cwd: process.cwd() }); let stdout = '', stderr = '';
-    p.stdout.on('data', (c) => stdout += c); p.stderr.on('data', (c) => stderr += c); p.on('error', reject); p.on('close', (code) => resolve({ code, stdout, stderr }));
+    const p = spawn(cmd, args, { env, cwd: process.cwd() }); let stdout = '', stderr = '', timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; p.kill('SIGTERM'); setTimeout(() => p.kill('SIGKILL'), 2000).unref(); }, timeoutMs);
+    p.stdout.on('data', (c) => stdout += c); p.stderr.on('data', (c) => stderr += c); p.on('error', reject); p.on('close', (code) => { clearTimeout(timer); resolve({ code, stdout, stderr, timedOut }); });
   });
 }
