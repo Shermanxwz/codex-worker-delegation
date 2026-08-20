@@ -36,7 +36,7 @@ export class CodexAppServerClient {
   async start() {
     if (this.process) return this;
     const bin = this.codexBin || await resolveCodexBinary({ env: this.env, cwd: this.cwd });
-    this.process = spawn(bin, ['app-server', '--stdio'], {
+    this.process = spawn(bin, ['app-server'], {
       env: this.env,
       cwd: this.cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -114,16 +114,20 @@ export class CodexAppServerClient {
   }
 
   async close() {
-    if (!this.process) return;
+    const processRef = this.process;
+    if (!processRef) return;
     this.closing = true;
     for (const pending of this.pending.values()) clearTimeout(pending.timer);
     this.pending.clear();
-    this.process.stdin.end();
-    if (this.process.exitCode === null) this.process.kill('SIGTERM');
+    if (processRef.exitCode !== null || processRef.signalCode !== null) return;
+    processRef.stdin.end();
+    processRef.kill('SIGTERM');
     await new Promise((resolve) => {
-      const timer = setTimeout(() => { if (this.process?.exitCode === null) this.process.kill('SIGKILL'); resolve(); }, 1500);
-      timer.unref();
-      this.process.once('close', () => { clearTimeout(timer); resolve(); });
+      const timer = setTimeout(() => {
+        if (processRef.exitCode === null && processRef.signalCode === null) processRef.kill('SIGKILL');
+        resolve();
+      }, 1500);
+      processRef.once('close', () => { clearTimeout(timer); resolve(); });
     });
   }
 

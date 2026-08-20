@@ -36,3 +36,12 @@ test('app-server client paginates Codex model/list and installs plugin through n
   assert.equal(installed.enabled, true);
   assert.equal(installed.pluginId, 'codex-worker-delegation@codex-worker-delegation-local');
 });
+
+test('app-server client surfaces an early Codex process exit instead of hanging during cleanup', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cwd-appserver-exit-'));
+  t.after(() => fs.rm(dir, { recursive:true, force:true }));
+  const codexBin = path.join(dir, 'codex');
+  await fs.writeFile(codexBin, '#!/usr/bin/env node\nconsole.error("intentional early exit"); process.exit(7);\n', { mode:0o755 });
+  const service = new CodexAppServerService({ codexBin, cwd:path.resolve('.'), env:{...process.env}, timeoutMs:1000 });
+  await assert.rejects(service.listModels(), /exited \(7\).*intentional early exit/);
+});
