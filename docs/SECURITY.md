@@ -1,9 +1,33 @@
 # Security model
 
-- The control plane binds to `127.0.0.1` by default. A non-loopback deployment should set `CWD_WEB_TOKEN` and place a TLS reverse proxy in front.
-- Upstream API keys are AES-256-GCM encrypted at rest with a 32-byte local key stored mode `0600`.
-- The local Codex gateway uses a separate random bearer token stored mode `0600`. Codex obtains it through command-backed provider auth (`cat <token-file>`), so no third-party key is written to `config.toml`.
-- Provider URLs reject embedded credentials. Custom `Authorization` headers are rejected by the Web API.
-- `auth.json`, keyring data, built-in provider definitions, `chatgpt_base_url`, and OpenAI login state are not written by this project.
-- Codex `PreToolUse` hooks are a guardrail, not an OS sandbox. Use Codex sandbox/approval policy for process and filesystem isolation.
-- A hook definition must be reviewed/trusted by the user in Codex before control effects apply. This project does not bypass Codex hook trust.
+## Credential separation
+
+- The built-in Codex `openai` provider remains owned by Codex and may continue using the user's ChatGPT OAuth/account state.
+- This project does not write `auth.json`, keyring records, `chatgpt_base_url`, or built-in provider definitions.
+- The New API key is encrypted at rest with AES-256-GCM using a separate random 32-byte local key stored mode `0600`.
+- Codex never needs the New API key. The namespaced `codex_worker_gateway` provider authenticates to the local gateway with a distinct random bearer token stored mode `0600` and resolved through command-backed provider auth.
+- Provider selection is per Codex execution thread. Switching a Worker from official to third-party does not require changing the ChatGPT login.
+
+## Network boundary
+
+- The control plane binds to `127.0.0.1` by default.
+- The plugin's cross-provider MCP tool calls a token-authenticated internal loopback endpoint.
+- A non-loopback Web deployment must set `CWD_WEB_TOKEN` and should use a TLS reverse proxy plus host firewall restrictions.
+- Provider URLs reject embedded credentials and non-HTTP(S) schemes.
+- User-supplied `Authorization` headers are rejected; authorization is generated from the encrypted credential instead.
+
+## Execution boundary
+
+- Codex `PreToolUse` hooks are a policy guardrail, not an OS sandbox.
+- `DELEGATE` denies root body-work tools while permitting coordination/delegation surfaces.
+- `MAIN` denies new native or cross-provider workers and freezes native subagent tool execution.
+- Cross-provider verifier threads are created with the Codex `read-only` sandbox. The hook also denies common execution/mutation tools for native `cwd-verifier` agents.
+- Use Codex permissions/sandboxing and operating-system isolation for untrusted commands, secrets, and filesystem boundaries.
+
+## Plugin trust
+
+Codex must trust/install the plugin through its normal plugin/hook mechanisms before hook policy applies. This project does not bypass Codex's plugin trust model or approval surfaces.
+
+## What coexistence does and does not mean
+
+Coexistence means the same Codex installation can keep the official ChatGPT account/provider configured while separately routing selected threads through `codex_worker_gateway`. It does not mean a single native `spawn_agent` child can currently change model provider: upstream Codex inherits the parent's provider for native children, so cross-provider work intentionally uses a provider-specific App Server thread and is reported as such.

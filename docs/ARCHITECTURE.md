@@ -2,27 +2,97 @@
 
 ## Principle
 
-Codex Worker Delegation does not replace Codex orchestration. It composes with current Codex native Subagents/Multi-Agent V2 and the universal plugin system.
+Codex Worker Delegation augments the official ChatGPT Linux / Codex runtime instead of replacing it. The Web control plane owns routing policy; Codex remains the execution runtime.
 
-1. **Native plugin**: skill instructions, a read-only MCP status tool, and a `PreToolUse` hook.
-2. **Local control plane**: loopback Web UI and state store.
-3. **Responses compatibility gateway**: Codex always speaks Responses to `codex_worker_gateway`; the gateway either forwards native `/v1/responses` or translates to `/v1/chat/completions`.
-4. **Codex config integration**: adds only a namespaced provider and custom subagent roles. Official authentication is outside this project's write set.
+The v2 design has four layers:
+
+1. **Codex plugin** — skill instructions, `PreToolUse` enforcement, `delegation_status`, and `delegate_worker`.
+2. **Local control plane** — loopback Web UI, routing matrix, encrypted provider state, audit log.
+3. **Responses compatibility gateway** — Codex always speaks Responses to the namespaced `codex_worker_gateway`; the gateway forwards native `/v1/responses` or bridges a chat-only upstream.
+4. **Codex App Server integration** — reads the current model catalog and creates provider-specific cross-provider threads using official JSON-RPC methods.
+
+## Why there are two worker paths
+
+Current Codex native `spawn_agent` supports child model/reasoning overrides, but the child inherits the parent model provider. A role file can change bounded role configuration, but it is not a supported provider-switch boundary.
+
+Therefore routing is explicit:
+
+- **Same provider as Main**: native Codex subagent. `cwd-worker` and `cwd-verifier` are normal auto-discovered roles in `~/.codex/agents/*.toml`.
+- **Different provider from Main**: provider-specific Codex App Server thread created with `thread/start.modelProvider`.
+
+The second path remains a real Codex thread but is not represented as a native spawn edge. The Web UI and MCP result identify it as a `Cross-provider Thread`; the project never fabricates native-subagent provenance.
 
 ## Official + third-party coexistence
 
-The built-in `openai` provider and ChatGPT login are never redefined. Worker and verifier role files can point to `codex_worker_gateway` even while the root thread continues to use official ChatGPT. The Web UI can optionally select the gateway for the root model and later restore the exact original top-level `model` / `model_provider` values captured at installation.
+Installation does not change the existing top-level `model_provider` or `model` selection and does not touch `auth.json`. It adds only:
+
+```toml
+[model_providers.codex_worker_gateway]
+name = "Codex Worker Delegation Gateway"
+base_url = "http://127.0.0.1:8788/v1"
+wire_api = "responses"
+requires_openai_auth = false
+
+[model_providers.codex_worker_gateway.auth]
+command = "cat"
+args = ["<project gateway.token>"]
+```
+
+The built-in `openai` provider continues using Codex-owned ChatGPT authentication. The New API credential never enters Codex config; it stays encrypted in this project's vault. Selection happens per execution thread, not by replacing the account login.
+
+## Model discovery
+
+- Official/current Codex catalog: `codex app-server` → `model/list` with pagination.
+- Third-party catalog: configured upstream → `/v1/models`.
+- Manual model IDs remain available because some OpenAI-compatible providers do not expose a useful models endpoint.
+
+The state store persists provider + model independently for Main, Worker, and Verifier in `AUTO`, `DELEGATE`, and `MAIN`.
 
 ## Protocol auto-detection
 
-For `protocol=auto`, the gateway first sends the real Codex request to the upstream Responses endpoint. Only endpoint-level unsupported signals (404/405/410/501 or explicit unsupported-route messages) trigger Chat Completions translation. Authentication, model, quota, and validation errors are not silently rerouted. A successful decision is cached per model and can be explicitly re-probed from the Web UI.
+Codex custom providers use Responses wire format. The local gateway therefore has one stable Codex-facing API regardless of upstream implementation.
+
+For `protocol=auto`:
+
+1. send to upstream `/v1/responses`;
+2. cache Responses support when successful;
+3. fall back to `/v1/chat/completions` only on endpoint-level unsupported signals (404/405/410/501 or explicit unsupported-route text);
+4. never hide authentication, quota, model, or validation errors by retrying them as another protocol;
+5. translate text, tool calls, tool outputs, streaming events, and usage back into Responses semantics.
+
+The decision cache is per model and can be re-probed from the Web UI.
 
 ## Delegation policy
 
-`PreToolUse` currently includes native Codex `agent_id` and `agent_type`, so policy can distinguish the root from a spawned subagent.
+`PreToolUse` receives root/subagent identity information from current Codex for thread-spawned agents.
 
-- AUTO: permit native behavior.
-- DELEGATE: root only gets coordination tools; subagents may execute.
-- MAIN: root may execute but cannot spawn new agents; existing subagent tool calls are denied.
+- `AUTO`: normal Codex execution; routing instructions encourage delegation where useful.
+- `DELEGATE`: root is coordination-only. Native agent-management tools and the cross-provider delegation MCP tool remain allowed; body-work tools are denied on root.
+- `MAIN`: root executes directly. Native spawning and cross-provider delegation are denied; existing native subagent tool calls are frozen.
+- `cwd-verifier`: execution/mutation tool patterns are denied in addition to the read-only App Server sandbox used for cross-provider verifier threads.
 
-Hosted tools that do not participate in `PreToolUse` remain outside this hook's enforcement boundary; this is a Codex hook-system limitation, not hidden by the project.
+Hosted capabilities that do not pass through `PreToolUse` remain outside the hook boundary. The project does not claim an OS-level sandbox; Codex sandbox/permissions remain the security authority.
+
+## Runtime flow
+
+```text
+Web panel
+  ├─ model/list via Codex app-server
+  ├─ New API /v1/models
+  └─ routing state
+          |
+          v
+Root Codex thread
+  ├─ same-provider task -> native spawn_agent -> cwd-worker / cwd-verifier
+  └─ cross-provider task -> plugin MCP delegate_worker
+                               |
+                               v
+                         local control plane
+                               |
+                               v
+                    codex app-server thread/start
+                      modelProvider=<selected>
+                               |
+                               v
+                    official or gateway provider
+```

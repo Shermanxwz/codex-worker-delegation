@@ -5,17 +5,21 @@ import { spawn, spawnSync } from 'node:child_process';
 
 const DEFAULT_TIMEOUT_MS = 15000;
 
-export function resolveCodexBinary(env = process.env) {
+export function codexBinaryCandidates(env = process.env) {
   const explicit = [env.CODEX_CLI_PATH, env.CODEX_BIN].filter(Boolean);
   const home = env.HOME || os.homedir();
-  const candidates = [
+  return [
     ...explicit,
+    '/usr/lib/chatgpt/resources/codex',
     path.join(home, '.local', 'bin', 'codex'),
     path.join(home, '.codex', 'bin', 'codex'),
     path.join(home, '.codex', 'packages', 'standalone', 'current', 'bin', 'codex'),
     path.join(home, '.codex', 'packages', 'standalone', 'current', 'codex')
   ];
-  for (const candidate of candidates) {
+}
+
+export function resolveCodexBinary(env = process.env) {
+  for (const candidate of codexBinaryCandidates(env)) {
     try { fs.accessSync(candidate, fs.constants.X_OK); return candidate; } catch {}
   }
   const probe = spawnSync('sh', ['-lc', 'command -v codex'], { encoding: 'utf8', env });
@@ -92,6 +96,10 @@ export class CodexAppServerClient {
       }, timeoutMs);
       this.notificationWaiters.push(waiter);
     });
+  }
+
+  async getAccount({ refreshToken = false } = {}) {
+    return this.request('account/read', { refreshToken });
   }
 
   async listModels({ includeHidden = false } = {}) {
