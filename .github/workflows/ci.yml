@@ -1,0 +1,34 @@
+name: CI
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    strategy:
+      matrix:
+        node: [20, 22, 24]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: "${{ matrix.node }}"}
+      - run: npm run check
+      - run: npm test
+  codex-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: "22"}
+      - run: npm run check
+      - name: Install current official Codex package
+        run: npm install --no-save @openai/codex
+      - name: Verify Codex binary
+        run: npx codex --version
+      - name: Install repository marketplace through official Codex manager
+        run: |
+          npx codex plugin marketplace add "$GITHUB_WORKSPACE"
+          npx codex plugin add codex-worker-delegation@codex-worker-delegation-local
+          npx codex plugin list --json
+      - name: Real Codex -> local Responses gateway -> chat-only upstream E2E
+        run: node scripts/real-codex-e2e.mjs

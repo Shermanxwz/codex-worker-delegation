@@ -1,0 +1,12 @@
+{
+  "name": "codex-worker-delegation-local",
+  "interface": {"displayName": "Codex Worker Delegation"},
+  "plugins": [
+    {
+      "name": "codex-worker-delegation",
+      "source": {"source": "local", "path": "./plugins/codex-worker-delegation"},
+      "policy": {"installation": "AVAILABLE", "authentication": "ON_USE"},
+      "category": "Developer Tools"
+    }
+  ]
+}

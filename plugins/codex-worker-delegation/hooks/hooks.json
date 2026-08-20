@@ -1,0 +1,17 @@
+{
+  "description": "Enforces AUTO / DELEGATE / MAIN policy at Codex PreToolUse using native subagent identity fields.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$PLUGIN_ROOT/hooks/policy-hook.mjs\"",
+            "timeout": 5,
+            "statusMessage": "Applying delegation policy"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "codex-worker-delegation",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Native Codex subagent delegation control plane and Responses compatibility gateway for third-party models.",
+  "engines": {"node": ">=20"},
+  "scripts": {
+    "start": "node src/server.mjs",
+    "test": "node --test test/*.test.mjs",
+    "check": "node scripts/check.mjs",
+    "doctor": "node src/cli.mjs doctor",
+    "install:codex": "node src/cli.mjs install",
+    "restore:official": "node src/cli.mjs official"
+  }
+}

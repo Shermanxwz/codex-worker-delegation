@@ -1,0 +1,20 @@
+{
+  "name": "codex-worker-delegation",
+  "version": "1.0.0",
+  "description": "Native Codex subagent delegation policy and third-party model coexistence companion.",
+  "author": {"name": "Shermanxwz", "url": "https://github.com/Shermanxwz"},
+  "repository": "https://github.com/Shermanxwz/codex-worker-delegation",
+  "license": "MIT",
+  "keywords": ["codex", "subagents", "delegation", "responses", "multi-model"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Codex Worker Delegation",
+    "shortDescription": "Native subagent delegation and multi-model routing",
+    "longDescription": "Control Codex native subagents from a local Web panel while keeping official ChatGPT authentication isolated from third-party model routing.",
+    "developerName": "Shermanxwz",
+    "category": "Developer Tools",
+    "capabilities": ["Interactive", "Write"],
+    "defaultPrompt": ["Use native subagents to implement and verify this task.", "Show the current delegation mode and model routing."]
+  }
+}
