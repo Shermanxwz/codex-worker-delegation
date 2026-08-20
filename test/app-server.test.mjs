@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { CodexAppServerClient } from '../src/app-server.mjs';
+import { CodexAppServerClient, codexBinaryCandidates } from '../src/app-server.mjs';
 
 async function fakeCodex(t) {
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'cwd-appserver-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));
@@ -12,6 +12,10 @@ async function fakeCodex(t) {
   await fs.writeFile(script,`#!/usr/bin/env node\nconst fs=require('fs');const log=process.env.FAKE_CODEX_LOG;let b='';process.stdin.setEncoding('utf8');process.stdin.on('data',c=>{b+=c;while(true){const i=b.indexOf('\\n');if(i<0)return;const l=b.slice(0,i).trim();b=b.slice(i+1);if(!l)continue;const m=JSON.parse(l);fs.appendFileSync(log,JSON.stringify(m)+'\\n');if(m.method==='initialize')out({id:m.id,result:{userAgent:'fake',codexHome:'/tmp/fake',platformFamily:'unix',platformOs:'linux'}});else if(m.method==='model/list')out({id:m.id,result:{data:[{id:'official-a',model:'official-a',displayName:'Official A',showInPicker:true}],nextCursor:null}});else if(m.method==='thread/start')out({id:m.id,result:{thread:{id:'thread-1'},model:m.params.model,modelProvider:m.params.modelProvider}});else if(m.method==='turn/start'){out({id:m.id,result:{turn:{id:'turn-1',status:'inProgress',items:[]}}});setTimeout(()=>out({method:'turn/completed',params:{threadId:m.params.threadId,turn:{id:'turn-1',status:'completed',items:[{type:'agentMessage',id:'a',text:'APP_SERVER_OK',phase:'final_answer',memoryCitation:null,delivery:null}]}}}),10)}}});function out(x){process.stdout.write(JSON.stringify(x)+'\\n')}\n`,{mode:0o755});
   return {script,log,env:{...process.env,FAKE_CODEX_LOG:log}};
 }
+
+test('Linux discovery includes Codex bundled by the official ChatGPT deb',()=>{const candidates=codexBinaryCandidates({HOME:'/home/test'});assert.equal(candidates[0],'/usr/lib/chatgpt/resources/codex');assert.ok(candidates.includes('/home/test/.local/bin/codex'))});
+
+test('explicit binary override takes priority over desktop and PATH candidates',()=>{const candidates=codexBinaryCandidates({HOME:'/home/test',CODEX_CLI_PATH:'/custom/codex'});assert.equal(candidates[0],'/custom/codex');assert.equal(candidates[1],'/usr/lib/chatgpt/resources/codex')});
 
 test('model/list is read from real app-server protocol surface',async(t)=>{const fake=await fakeCodex(t);const c=new CodexAppServerClient({binary:fake.script,env:fake.env,timeoutMs:2000});await c.start();t.after(()=>c.close());const models=await c.listModels();assert.equal(models[0].model,'official-a')});
 
