@@ -32,7 +32,9 @@ async function atomicWrite(file, text, mode = 0o600) {
 }
 
 function normalizeRole(value, fallback) {
-  const provider = value?.provider === 'third_party' ? 'third_party' : 'official';
+  const provider = value?.provider === 'third_party' || value?.provider === 'official'
+    ? value.provider
+    : fallback.provider;
   const model = typeof value?.model === 'string' ? value.model.trim() : fallback.model;
   return { provider, model };
 }
