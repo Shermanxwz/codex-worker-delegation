@@ -12,8 +12,14 @@
     "test": "node --test test/*.test.mjs",
     "check": "node scripts/check.mjs",
     "seal:production": "node scripts/production-seal.mjs",
+    "seal:release": "node scripts/release-seal.mjs",
+    "validate:deployment": "bash scripts/validate-deployment.sh",
+    "install:linux": "bash scripts/install-linux.sh",
+    "rollback:linux": "bash scripts/rollback-linux.sh",
+    "uninstall:linux": "bash scripts/uninstall-linux.sh",
     "doctor": "node src/cli.mjs doctor",
     "install:codex": "node src/cli.mjs install",
+    "uninstall:codex": "node src/cli.mjs uninstall",
     "official:status": "node src/cli.mjs official"
   }
 }
