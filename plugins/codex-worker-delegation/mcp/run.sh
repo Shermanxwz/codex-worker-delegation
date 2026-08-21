@@ -23,7 +23,7 @@ if command -v node >/dev/null 2>&1; then candidates+=("$(command -v node)"); fi
 if command -v nodejs >/dev/null 2>&1; then candidates+=("$(command -v nodejs)"); fi
 
 for node_bin in "${candidates[@]}"; do
-  if [[ -n "$node_bin" && -x "$node_bin" ]]; then
+  if [[ -n "$node_bin" && -x "$node_bin" ]] && "$node_bin" -e 'process.exit(Number(process.versions.node.split(".")[0])>=20?0:1)' >/dev/null 2>&1; then
     exec "$node_bin" "$server"
   fi
 done
