@@ -33,9 +33,19 @@ export const DEFAULT_STATE = Object.freeze({
 async function atomicWrite(file, text, mode = 0o600) {
   await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
   const tmp = `${file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
-  await fs.writeFile(tmp, text, { mode });
-  await fs.rename(tmp, file);
-  await fs.chmod(file, mode).catch(() => {});
+  let handle;
+  try {
+    handle = await fs.open(tmp, 'wx', mode);
+    await handle.writeFile(text);
+    await handle.sync();
+    await handle.close();
+    handle = null;
+    await fs.rename(tmp, file);
+    await fs.chmod(file, mode).catch(() => {});
+  } finally {
+    if (handle) await handle.close().catch(() => {});
+    await fs.unlink(tmp).catch((error) => { if (error.code !== 'ENOENT') throw error; });
+  }
 }
 
 function normalizeRole(value, fallback) {
@@ -100,6 +110,43 @@ export function setRoutingMode(state, mode, roles = {}) {
   return normalized;
 }
 
+async function readGatewayToken(file) {
+  const value = (await fs.readFile(file, 'utf8')).trim();
+  if (!/^[A-Za-z0-9_-]{43}$/.test(value)) throw new Error('gateway token must be a 32-byte base64url secret');
+  await fs.chmod(file, 0o600).catch(() => {});
+  return value;
+}
+
+async function createGatewayToken(file) {
+  await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+  try { return await readGatewayToken(file); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+
+  const token = crypto.randomBytes(32).toString('base64url');
+  const temporary = `${file}.${process.pid}.${crypto.randomBytes(8).toString('hex')}.toktmp`;
+  let handle;
+  try {
+    handle = await fs.open(temporary, 'wx', 0o600);
+    await handle.writeFile(`${token}\n`);
+    await handle.sync();
+    await handle.close();
+    handle = null;
+    try {
+      // Publish only a fully-written inode. A second process either wins first
+      // or reads the winner; it can never observe an empty/partial final token.
+      await fs.link(temporary, file);
+      await fs.chmod(file, 0o600).catch(() => {});
+      return token;
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      return await readGatewayToken(file);
+    }
+  } finally {
+    if (handle) await handle.close().catch(() => {});
+    await fs.unlink(temporary).catch((error) => { if (error.code !== 'ENOENT') throw error; });
+  }
+}
+
 export class StateStore {
   constructor({ env = process.env } = {}) {
     this.env = env;
@@ -143,29 +190,7 @@ export class StateStore {
 
   async ensureGatewayToken() {
     if (this.gatewayTokenPromise) return this.gatewayTokenPromise;
-    this.gatewayTokenPromise = (async () => {
-      const file = gatewayTokenPath(this.env);
-      await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-      try {
-        const existing = (await fs.readFile(file, 'utf8')).trim();
-        if (existing) return existing;
-      } catch (error) {
-        if (error.code !== 'ENOENT') throw error;
-      }
-      const token = crypto.randomBytes(32).toString('base64url');
-      try {
-        const handle = await fs.open(file, 'wx', 0o600);
-        try { await handle.writeFile(`${token}\n`); }
-        finally { await handle.close(); }
-        await fs.chmod(file, 0o600).catch(() => {});
-        return token;
-      } catch (error) {
-        if (error.code !== 'EEXIST') throw error;
-        const existing = (await fs.readFile(file, 'utf8')).trim();
-        if (!existing) throw new Error('gateway token file was created but is empty');
-        return existing;
-      }
-    })();
+    this.gatewayTokenPromise = createGatewayToken(gatewayTokenPath(this.env));
     try { return await this.gatewayTokenPromise; }
     finally { this.gatewayTokenPromise = null; }
   }
@@ -174,6 +199,7 @@ export class StateStore {
     const file = auditPath(this.env);
     await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
     await fs.appendFile(file, `${JSON.stringify({ at: new Date().toISOString(), event, ...details })}\n`, { mode: 0o600 });
+    await fs.chmod(file, 0o600).catch(() => {});
   }
 }
 

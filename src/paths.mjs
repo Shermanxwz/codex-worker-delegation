@@ -5,14 +5,22 @@ import { fileURLToPath } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const projectRoot = path.resolve(here, '..');
 
+function identityHome(env = process.env) {
+  const home = env.HOME || os.homedir();
+  if (!home || !path.isAbsolute(home)) throw new Error('HOME must be an absolute path for Codex Worker Delegation');
+  return path.resolve(home);
+}
+
 export function dataDir(env = process.env) {
   if (env.CWD_DATA_DIR) return path.resolve(env.CWD_DATA_DIR);
-  const xdg = env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share');
-  return path.join(xdg, 'codex-worker-delegation');
+  // Production state is identity-scoped exactly like ChatGPT/Codex auth. Do not
+  // let an inherited XDG_DATA_HOME from another uid silently split state, keys,
+  // hooks and MCP tools across two data roots.
+  return path.join(identityHome(env), '.local', 'share', 'codex-worker-delegation');
 }
 
 export function codexHome(env = process.env) {
-  return path.resolve(env.CODEX_HOME || path.join(os.homedir(), '.codex'));
+  return path.resolve(env.CODEX_HOME || path.join(identityHome(env), '.codex'));
 }
 
 export function statePath(env = process.env) { return path.join(dataDir(env), 'state.json'); }
