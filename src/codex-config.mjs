@@ -29,8 +29,10 @@ export function sameTopLevelSelectors(a = {}, b = {}) {
 }
 
 function removeManagedSections(text) {
-  const out = []; let skipping = false;
+  const out = []; let skipping = false; let skippingManagedBlock = false;
   for (const line of text.split(/\r?\n/)) {
+    if (line.trim() === '# --- codex-worker-delegation managed provider ---') { skippingManagedBlock = true; continue; }
+    if (skippingManagedBlock) { if (line.trim() === '# --- end codex-worker-delegation managed provider ---') skippingManagedBlock = false; continue; }
     const s = sectionName(line);
     if (s) skipping = MANAGED_SECTIONS.has(s);
     if (!skipping) out.push(line);

@@ -11,8 +11,10 @@
 ## Network boundary
 
 - The control plane binds to `127.0.0.1` by default.
+- The Web control plane stores only a salted scrypt password hash in the project data directory, uses short-lived HttpOnly SameSite sessions, throttles repeated login failures, and supports password rotation.
 - The plugin's cross-provider MCP tool calls a token-authenticated internal loopback endpoint.
-- A non-loopback Web deployment must set `CWD_WEB_TOKEN` and should use a TLS reverse proxy plus host firewall restrictions.
+- A non-loopback Web deployment must set `CWD_REQUIRE_AUTH=1`, provide a bootstrap `CWD_WEB_TOKEN` for first-time password setup/automation, and use a TLS reverse proxy plus host firewall restrictions. Set `CWD_COOKIE_SECURE=1` when TLS terminates in front of the service.
+- Do not expose the raw Node HTTP listener directly to the Internet; password protection is an application boundary, not a replacement for HTTPS, firewalling, rate limiting, or a reverse proxy.
 - Provider URLs reject embedded credentials and non-HTTP(S) schemes.
 - User-supplied `Authorization` headers are rejected; authorization is generated from the encrypted credential instead.
 

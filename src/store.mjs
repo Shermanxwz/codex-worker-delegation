@@ -5,13 +5,19 @@ import { statePath, auditPath, gatewayTokenPath } from './paths.mjs';
 
 const role = (provider = 'official', model = '') => ({ provider, model });
 const routingDefaults = () => ({
-  AUTO: { main: role('official'), worker: role('third_party'), verifier: role('third_party') },
+  AUTO: { main: role('official'), worker: role('official'), verifier: role('official') },
   DELEGATE: { main: role('official'), worker: role('third_party'), verifier: role('third_party') },
   MAIN: { main: role('official'), worker: role('official'), verifier: role('official') }
 });
 
+export const ROUTING_ROLES = Object.freeze({
+  AUTO: Object.freeze(['main']),
+  DELEGATE: Object.freeze(['main', 'worker']),
+  MAIN: Object.freeze(['main'])
+});
+
 export const DEFAULT_STATE = Object.freeze({
-  schemaVersion: 2,
+  schemaVersion: 3,
   mode: 'AUTO',
   provider: null,
   protocolCache: {},
@@ -43,11 +49,15 @@ function normalizeRouting(value, legacyModels = {}) {
   const defaults = routingDefaults();
   const output = {};
   for (const mode of ['AUTO', 'DELEGATE', 'MAIN']) {
-    output[mode] = {};
-    for (const roleName of ['main', 'worker', 'verifier']) {
-      const fallback = { ...defaults[mode][roleName] };
-      if (!fallback.model && legacyModels?.[roleName]) fallback.model = String(legacyModels[roleName]);
-      output[mode][roleName] = normalizeRole(value?.[mode]?.[roleName], fallback);
+    const raw = value?.[mode] || {};
+    const mainFallback = { ...defaults[mode].main, model: legacyModels?.main || defaults[mode].main.model };
+    const main = normalizeRole(raw.main, mainFallback);
+    if (mode === 'DELEGATE') {
+      const workerFallback = { ...defaults[mode].worker, model: legacyModels?.worker || defaults[mode].worker.model };
+      const worker = normalizeRole(raw.worker, workerFallback);
+      output[mode] = { main, worker, verifier: { ...worker } };
+    } else {
+      output[mode] = { main, worker: { ...main }, verifier: { ...main } };
     }
   }
   return output;
@@ -58,7 +68,7 @@ function normalizeState(value = {}) {
   return {
     ...structuredClone(DEFAULT_STATE),
     ...value,
-    schemaVersion: 2,
+    schemaVersion: DEFAULT_STATE.schemaVersion,
     models: legacyModels,
     routing: normalizeRouting(value.routing, legacyModels),
     protocolCache: value.protocolCache || {}
@@ -68,6 +78,24 @@ function normalizeState(value = {}) {
 export function activeRouting(state, mode = state.mode) {
   const normalized = normalizeState(state);
   return structuredClone(normalized.routing[mode] || normalized.routing.AUTO);
+}
+
+export function setRoutingMode(state, mode, roles = {}) {
+  const normalized = normalizeState(state);
+  const current = normalized.routing[mode] || normalized.routing.AUTO;
+  const main = normalizeRole(roles.main, current.main);
+  if (mode === 'DELEGATE') {
+    const worker = normalizeRole(roles.worker, current.worker);
+    normalized.routing[mode] = { main, worker, verifier: { ...worker } };
+  } else {
+    normalized.routing[mode] = { main, worker: { ...main }, verifier: { ...main } };
+  }
+  normalized.models = {
+    main: normalized.routing[normalized.mode].main.model,
+    worker: normalized.routing[normalized.mode].worker.model,
+    verifier: normalized.routing[normalized.mode].verifier.model
+  };
+  return normalized;
 }
 
 export class StateStore {

@@ -3,17 +3,18 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
-import { StateStore, publicState, activeRouting } from './store.mjs';
+import { StateStore, publicState, activeRouting, setRoutingMode } from './store.mjs';
 import { SecretVault } from './vault.mjs';
 import { ResponsesGateway } from './gateway.mjs';
 import { probeProvider, listProviderModels } from './provider.mjs';
 import { CodexConfigManager, CODEX_GATEWAY_PROVIDER_ID, inspectTopLevel, sameTopLevelSelectors } from './codex-config.mjs';
 import { withCodexAppServer, resolveCodexBinary } from './app-server.mjs';
 import { executionPlan } from './policy.mjs';
+import { WebAuth, MIN_PASSWORD_LENGTH } from './web-auth.mjs';
 export { executionPlan } from './policy.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const contentTypes = { '.html':'text/html; charset=utf-8', '.js':'text/javascript; charset=utf-8', '.css':'text/css; charset=utf-8', '.svg':'image/svg+xml' };
+const contentTypes = { '.html':'text/html; charset=utf-8', '.js':'text/javascript; charset=utf-8', '.css':'text/css; charset=utf-8', '.svg':'image/svg+xml', '.png':'image/png', '.webmanifest':'application/manifest+json' };
 const MODES = new Set(['AUTO', 'DELEGATE', 'MAIN']);
 const ROLES = new Set(['main', 'worker', 'verifier']);
 const PROVIDERS = new Set(['official', 'third_party']);
@@ -21,6 +22,7 @@ const PROVIDERS = new Set(['official', 'third_party']);
 export function createApp({ env = process.env, fetchImpl = fetch } = {}) {
   const store = new StateStore({ env });
   const vault = new SecretVault({ env });
+  const webAuth = new WebAuth({ env });
   const gateway = new ResponsesGateway({ store, vault, fetchImpl });
   const port = Number(env.CWD_PORT || 8788);
   const host = env.CWD_HOST || '127.0.0.1';
@@ -33,12 +35,29 @@ export function createApp({ env = process.env, fetchImpl = fetch } = {}) {
       if (req.method === 'GET' && url.pathname === '/v1/models') return serveGatewayModels(req, res, { store, vault, fetchImpl });
       if (req.method === 'POST' && url.pathname === '/internal/worker/run') {
         if (!await authorizeInternal(req, store)) return sendJson(res, 401, { error: 'invalid internal token' });
-        return sendJson(res, 200, await executeWorker(await readJson(req), { store, env }));
+        return sendJson(res, 200, await executeWorker(await readJson(req), { store, env, codex }));
+      }
+      if (req.method === 'GET' && url.pathname === '/api/auth/status') return sendJson(res, 200, await authStatus({ req, env, host, webAuth }));
+      if (req.method === 'POST' && url.pathname === '/api/auth/setup') {
+        if (!isLoopback(host) && (!env.CWD_WEB_TOKEN || req.headers.authorization !== `Bearer ${env.CWD_WEB_TOKEN}`)) return sendJson(res, 401, { error: 'bootstrap token required for public password setup' });
+        const body = await readJson(req);
+        await webAuth.setPassword(body.password);
+        const session = await webAuth.login(body.password, req.socket.remoteAddress || 'unknown');
+        return sendJson(res, 200, { ok: true, configured: true }, { 'set-cookie': webAuth.cookie(session, secureCookie(env, host)) });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/auth/login') {
+        const body = await readJson(req);
+        const session = await webAuth.login(body.password, req.socket.remoteAddress || 'unknown');
+        return sendJson(res, 200, { ok: true, authenticated: true }, { 'set-cookie': webAuth.cookie(session, secureCookie(env, host)) });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/auth/logout') {
+        webAuth.clear(req);
+        return sendJson(res, 200, { ok: true }, { 'set-cookie': webAuth.clearCookie() });
       }
       if (url.pathname.startsWith('/api/')) {
-        if (!authorizeUi(req, env, host)) return sendJson(res, 401, { error: 'unauthorized' });
+        if (req.method === 'GET' && url.pathname === '/api/health') return sendJson(res, 200, { ok: true, version: '3.0.0', host, port, codexBinary: resolveCodexBinary(env), authRequired: await webAuth.isConfigured() || env.CWD_REQUIRE_AUTH === '1' || !isLoopback(host) });
+        if (!await authorizeUi(req, env, host, webAuth)) return sendJson(res, 401, { error: 'unauthorized' });
         if (req.method === 'GET' && url.pathname === '/api/state') return sendJson(res, 200, publicState(await store.read()));
-        if (req.method === 'GET' && url.pathname === '/api/health') return sendJson(res, 200, { ok: true, version: '3.0.0', host, port, codexBinary: resolveCodexBinary(env) });
         if (req.method === 'GET' && url.pathname === '/api/catalog') return sendJson(res, 200, await loadCatalog({ store, vault, env, fetchImpl }));
         if (req.method === 'PUT' && url.pathname === '/api/mode') {
           const { mode } = await readJson(req);
@@ -52,14 +71,7 @@ export function createApp({ env = process.env, fetchImpl = fetch } = {}) {
           const mode = body.mode || (await store.read()).mode;
           if (!MODES.has(mode)) return sendJson(res, 400, { error: 'invalid mode' });
           validateRouting(body.roles);
-          const state = await store.update((s) => {
-            s.routing[mode] = {
-              ...s.routing[mode],
-              ...Object.fromEntries(Object.entries(body.roles).map(([name, value]) => [name, { provider: value.provider, model: String(value.model || '').trim() }]))
-            };
-            if (mode === s.mode) s.models = { main: s.routing[mode].main.model, worker: s.routing[mode].worker.model, verifier: s.routing[mode].verifier.model };
-            return s;
-          });
+          const state = await store.update((s) => setRoutingMode(s, mode, body.roles));
           await store.audit('routing.changed', { mode, roles: body.roles });
           return sendJson(res, 200, publicState(state));
         }
@@ -83,18 +95,35 @@ export function createApp({ env = process.env, fetchImpl = fetch } = {}) {
           await store.audit('provider.probed', { model: selected, protocol: result.protocol, ok: result.ok, status: result.status });
           return sendJson(res, 200, result);
         }
+        if (req.method === 'POST' && url.pathname === '/api/provider/connectivity') {
+          const state = await store.read(); if (!state.provider) return sendJson(res, 400, { error: 'configure provider first' });
+          const body = await readJson(req); const apiKey = await vault.decrypt(state.provider.apiKeyCipher);
+          const models = [...new Set((Array.isArray(body.models) ? body.models : (await listProviderModels({ baseUrl: state.provider.baseUrl, apiKey, fetchImpl, extraHeaders: state.provider.headers })).map((item) => item.id)).map((model) => String(model || '').trim()).filter(Boolean))];
+          if (!models.length) return sendJson(res, 400, { error: 'no models available to test' });
+          const results = await testProviderModels({ models, state, apiKey, fetchImpl });
+          await store.update((s) => { for (const result of results) if (result.ok && result.protocol !== 'unknown') s.protocolCache[result.model] = { protocol: result.protocol, detectedAt: new Date().toISOString(), probeOk: true }; return s; });
+          return sendJson(res, 200, { results });
+        }
         if (req.method === 'POST' && url.pathname === '/api/codex/install') {
-          await store.ensureGatewayToken();
-          const snap = await codex.install();
-          const next = await store.update((s) => { s.installed = true; return s; });
+          const snap = await ensureCodexIntegration({ store, codex });
+          const next = await store.read();
           await store.audit('codex.installed', { providerId: snap.providerId, agents: snap.agents, topLevelPreserved: snap.topLevelPreserved });
           return sendJson(res, 200, publicState(next));
+        }
+        if (req.method === 'POST' && url.pathname === '/api/auth/change') {
+          if (!webAuth.authenticated(req)) return sendJson(res, 401, { error: 'login required' });
+          const body = await readJson(req);
+          if (!await webAuth.verifyPassword(body.currentPassword)) return sendJson(res, 401, { error: 'current password is invalid' });
+          await webAuth.changePassword(body.newPassword);
+          webAuth.clear(req);
+          const session = await webAuth.login(body.newPassword, req.socket.remoteAddress || 'unknown');
+          return sendJson(res, 200, { ok: true, authenticated: true }, { 'set-cookie': webAuth.cookie(session, secureCookie(env, host)) });
         }
         if (req.method === 'POST' && url.pathname === '/api/verify/coexistence') {
           const body = await readJson(req);
           return sendJson(res, 200, await verifyCoexistence({ body, store, codex, env }));
         }
-        if (req.method === 'POST' && url.pathname === '/api/worker/run') return sendJson(res, 200, await executeWorker(await readJson(req), { store, env }));
+        if (req.method === 'POST' && url.pathname === '/api/worker/run') return sendJson(res, 200, await executeWorker(await readJson(req), { store, env, codex }));
         return sendJson(res, 404, { error: 'not found' });
       }
       return serveStatic(url.pathname, res);
@@ -120,7 +149,7 @@ async function serveGatewayModels(req, res, { store, vault, fetchImpl }) {
   return sendJson(res, 200, { object: 'list', data: models.map((item) => ({ id: item.id, object: 'model', owned_by: item.ownedBy || state.provider.name || 'third-party' })) });
 }
 
-async function executeWorker(body, { store, env }) {
+async function executeWorker(body, { store, env, codex }) {
   const state = await store.read();
   const mode = body.mode || state.mode;
   const roleName = body.role || 'worker';
@@ -138,7 +167,7 @@ async function executeWorker(body, { store, env }) {
       instruction: `Use Codex native spawn_agent with agent_type=${plan.agentType} and model=${route.model}. This route stays on the built-in OpenAI provider.`
     };
   }
-  if (route.provider === 'third_party' && !state.installed) throw new Error('install/refresh Codex integration before using third-party threads');
+  if (route.provider === 'third_party') await ensureCodexIntegration({ store, codex });
   const result = await withCodexAppServer((client) => client.runThread({
     model: route.model,
     modelProvider: route.provider === 'third_party' ? CODEX_GATEWAY_PROVIDER_ID : 'openai',
@@ -154,10 +183,10 @@ async function executeWorker(body, { store, env }) {
 async function verifyCoexistence({ body, store, codex, env }) {
   const state = await store.read();
   if (!state.provider) throw new Error('configure New API before coexistence verification');
-  if (!state.installed) throw new Error('install/refresh Codex integration before coexistence verification');
   const model = String(body.model || firstThirdPartyModel(state) || '').trim();
   if (!model) throw new Error('select at least one third-party model before coexistence verification');
   const selectorsBefore = inspectTopLevel(await codex.read());
+  const integration = await ensureCodexIntegration({ store, codex });
   const proof = await withCodexAppServer(async (client) => {
     const before = await client.getAccount({ refreshToken: false });
     const thread = await client.runThread({
@@ -183,6 +212,8 @@ async function verifyCoexistence({ body, store, codex, env }) {
     officialChatGPTBefore: summarizeAccount(proof.before),
     officialChatGPTAfter: summarizeAccount(proof.after),
     thirdParty: { model, modelProvider: CODEX_GATEWAY_PROVIDER_ID, threadId: proof.thread?.threadId || null, status: proof.thread?.status || null, markerObserved },
+    integrationInstalled: true,
+    integrationProviderId: integration.providerId,
     globalSelectorUntouched: selectorStable,
     selectorsBefore: publicSelectors(selectorsBefore),
     selectorsAfter: publicSelectors(selectorsAfter),
@@ -193,8 +224,10 @@ async function verifyCoexistence({ body, store, codex, env }) {
 }
 
 function firstThirdPartyModel(state) {
-  const routes = activeRouting(state);
-  for (const roleName of ['worker', 'verifier', 'main']) if (routes[roleName]?.provider === 'third_party' && routes[roleName]?.model) return routes[roleName].model;
+  for (const mode of ['DELEGATE', 'AUTO', state.mode]) {
+    const routes = activeRouting(state, mode);
+    for (const roleName of ['worker', 'main', 'verifier']) if (routes[roleName]?.provider === 'third_party' && routes[roleName]?.model) return routes[roleName].model;
+  }
   return '';
 }
 function summarizeAccount(result) { const a = result?.account || null; return a ? { type: a.type || null, planType: a.planType || null, email: a.email || null, requiresOpenaiAuth: result?.requiresOpenaiAuth ?? null } : { type: null, planType: null, email: null, requiresOpenaiAuth: result?.requiresOpenaiAuth ?? null }; }
@@ -224,11 +257,16 @@ async function loadCatalog({ store, vault, env, fetchImpl }) {
   return result;
 }
 
-function authorizeUi(req, env, host) {
+async function authorizeUi(req, env, host, webAuth) {
   const token = env.CWD_WEB_TOKEN;
-  if (!token) return ['127.0.0.1', '::1', 'localhost'].includes(host);
-  return req.headers.authorization === `Bearer ${token}`;
+  if (token && req.headers.authorization === `Bearer ${token}`) return true;
+  if (await webAuth.isConfigured()) return webAuth.authenticated(req);
+  return isLoopback(host) && env.CWD_REQUIRE_AUTH !== '1';
 }
+function isLoopback(host) { return ['127.0.0.1', '::1', 'localhost'].includes(host); }
+function secureCookie(env, host) { return env.CWD_COOKIE_SECURE === '1' || !isLoopback(host); }
+async function authStatus({ req, env, host, webAuth }) { const configured = await webAuth.isConfigured(); return { configured, authenticated: configured ? webAuth.authenticated(req) : isLoopback(host) && env.CWD_REQUIRE_AUTH !== '1', required: configured || env.CWD_REQUIRE_AUTH === '1' || !isLoopback(host), minPasswordLength: MIN_PASSWORD_LENGTH, loopback: isLoopback(host) }; }
+async function ensureCodexIntegration({ store, codex }) { await store.ensureGatewayToken(); const snap = await codex.install(); await store.update((s) => { s.installed = true; return s; }); return snap; }
 function validateRouting(roles) {
   if (!roles || typeof roles !== 'object') throw new Error('roles is required');
   for (const [name, value] of Object.entries(roles)) {
@@ -243,6 +281,22 @@ function validateProvider(body) {
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('baseUrl must be an http(s) URL without embedded credentials');
   if (!['auto', 'responses', 'chat'].includes(body.protocol || 'auto')) throw new Error('protocol must be auto, responses, or chat');
 }
+async function testProviderModels({ models, state, apiKey, fetchImpl }) {
+  const results = [];
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < models.length) {
+      const index = cursor++;
+      const model = models[index]; const startedAt = Date.now();
+      try {
+        const result = await probeProvider({ baseUrl: state.provider.baseUrl, apiKey, model, fetchImpl, extraHeaders: state.provider.headers, timeoutMs: 30000 });
+        results[index] = { model, ok: result.ok === true, protocol: result.protocol, status: result.status || null, latencyMs: Date.now() - startedAt, endpointExists: result.endpointExists ?? true, error: result.error || null };
+      } catch (error) { results[index] = { model, ok: false, protocol: 'unknown', status: null, latencyMs: Date.now() - startedAt, endpointExists: false, error: error.message }; }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(3, models.length) }, worker));
+  return results;
+}
 function sanitizeHeaders(headers) {
   if (!headers || typeof headers !== 'object' || Array.isArray(headers)) return {};
   const out = {}; for (const [k,v] of Object.entries(headers)) if (/^[A-Za-z0-9-]{1,64}$/.test(k) && typeof v === 'string' && k.toLowerCase() !== 'authorization') out[k] = v; return out;
@@ -254,7 +308,7 @@ async function readJson(req, limit = 8 * 1024 * 1024) {
   if (enc === 'zstd') body = zlib.zstdDecompressSync(body); else if (enc === 'gzip') body = zlib.gunzipSync(body); else if (enc === 'br') body = zlib.brotliDecompressSync(body); else if (enc && enc !== 'identity') throw new Error(`unsupported content-encoding: ${enc}`);
   return JSON.parse(body.toString('utf8'));
 }
-function sendJson(res, status, body) { res.writeHead(status, { 'content-type':'application/json; charset=utf-8', 'cache-control':'no-store' }); res.end(JSON.stringify(body)); }
+function sendJson(res, status, body, headers = {}) { res.writeHead(status, { 'content-type':'application/json; charset=utf-8', 'cache-control':'no-store', ...headers }); res.end(JSON.stringify(body)); }
 async function serveStatic(urlPath, res) {
   const relative = urlPath === '/' ? 'index.html' : urlPath.replace(/^\/+/, ''); const file = path.resolve(root, 'public', relative); const publicRoot = path.resolve(root, 'public');
   if (!file.startsWith(publicRoot + path.sep) && file !== path.join(publicRoot, 'index.html')) return sendJson(res, 403, { error:'forbidden' });
