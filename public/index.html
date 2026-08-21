@@ -89,7 +89,7 @@
         <section class="page" data-page="integration" hidden>
           <div class="page-heading"><div><p class="eyebrow">CODEX NATIVE</p><h1>Codex 原生集成</h1><p class="lead">安装 namespaced provider 与 worker / verifier roles，然后用真实线程证明官方 ChatGPT 和 New API 同时可用。</p></div><button id="install">安装 / 刷新</button></div>
           <div class="card"><div id="integrationState" class="integration-status">正在读取集成状态…</div><div class="actions"><button id="verifyCoexistence">真实共存验收</button></div><pre id="coexistProof" class="compact"></pre></div>
-          <div class="card"><h2>原生 Codex 模型可见性</h2><p id="nativeVisibility" class="muted">正在比较官方 model/list 与 New API /v1/models…</p><div class="notice"><strong>原生 provider 是分开的</strong><span>官方 ChatGPT / Codex 的选择器属于 built-in openai provider；本项目不改顶层 provider/model。第三方 provider 目录已提供 Codex 原生格式，但不会伪装成官方模型，也不会被强行并入官方目录。</span></div></div>
+          <div class="card"><h2>原生 Codex 模型可见性</h2><p id="nativeVisibility" class="muted">正在比较官方 model/list 与 New API /v1/models…</p><div class="notice"><strong>这里显示真实能力边界</strong><span>自定义 provider 可以通过显式 <code>modelProvider</code> 的 App Server 线程运行；但官方模型条目没有 provider 绑定字段。把第三方 ID 只塞进官方 catalog 会造成“看得见、选中后仍走 openai”的错误路由，因此验收不会把这种伪合并标为成功。</span></div></div>
           <div class="card"><h2>真实路由测试</h2><div class="test-grid"><label>测试任务<textarea id="testTask" rows="4">检查当前项目并只返回一行：WORKER_ROUTE_OK</textarea></label><label>测试角色<select id="testRole"><option value="worker">Worker</option><option value="verifier">Verifier（只读）</option></select></label></div><div class="actions"><button id="runWorker" class="secondary">运行当前模式路由</button></div><pre id="runResult"></pre><pre id="status"></pre></div>
         </section>
       </main>
