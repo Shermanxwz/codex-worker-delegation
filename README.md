@@ -106,9 +106,9 @@ After configuring a real New API provider on the target Linux machine, run the a
 npm run seal:production
 ```
 
-It installs the namespaced provider if needed, checks the packaged Codex runtime, verifies the official account before and after a real third-party thread, checks the configured worker route, and exits non-zero unless every requested proof passes. It never prints or rewrites API keys or `auth.json`.
+It installs the namespaced provider if needed, checks the packaged Codex runtime, runs the complete third-party model connectivity matrix, verifies the official account before and after a real third-party thread, checks the configured worker route, and exits non-zero unless the requested core proofs pass. It never prints or rewrites API keys or `auth.json`.
 
-Open the loopback Web URL, configure New API, select routing, and press **安装 / 刷新**. Use **真实共存验收** on the real Linux install when you want direct proof that a third-party turn and ChatGPT login coexist in one `CODEX_HOME`.
+Open the loopback Web URL, set the strong control-plane password, configure New API, select routing, and press **安装 / 刷新**. The routing surface intentionally exposes one model for AUTO, Main + Worker for WORKER, and Main only for MAIN. Verifier is an internal read-only check that inherits Worker. The model section supports one-by-one or batch connectivity tests. Use **真实共存验收** on the real Linux install when you want direct proof that a third-party turn and ChatGPT login coexist in one `CODEX_HOME`.
 
 The plugin-manager installer remains available:
 
@@ -120,7 +120,7 @@ The plugin-manager installer remains available:
 
 - New API keys are encrypted with AES-256-GCM in the project data directory.
 - The gateway binds to loopback by default and requires a random local bearer token.
-- The Web API is loopback-only unless `CWD_WEB_TOKEN` is configured.
+- The Web API is loopback-only by default. The Web control plane supports a salted scrypt password, HttpOnly SameSite sessions, login throttling, and password rotation. For public binding, set `CWD_REQUIRE_AUTH=1`, provide a bootstrap `CWD_WEB_TOKEN`, and put the service behind HTTPS.
 - Provider URLs reject embedded credentials and non-HTTP(S) schemes.
 - User-supplied custom `Authorization` headers are rejected.
 - `auth.json` stays Codex-owned and is never copied to the third-party provider.

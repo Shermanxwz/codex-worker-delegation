@@ -1,4 +1,4 @@
-import { endpoints, providerHeaders, unsupportedEndpoint } from './provider.mjs';
+import { endpoints, providerHeaders, shouldTryChatFallback } from './provider.mjs';
 import { responsesToChat, convertChatSse, chatJsonToResponses } from './translate.mjs';
 
 async function readErrorBody(response) { try { return await response.clone().text(); } catch { return ''; } }
@@ -27,7 +27,7 @@ export class ResponsesGateway {
     const upstream = await this.fetchImpl(ep.responses, { method: 'POST', headers, body: JSON.stringify(body) });
     if (!upstream.ok) {
       const errorText = await readErrorBody(upstream);
-      if (unsupportedEndpoint(upstream.status, errorText)) {
+      if (shouldTryChatFallback(upstream.status, errorText)) {
         await this.#cache(model, 'chat');
         return this.#chat(res, body, ep.chat, headers, provider);
       }

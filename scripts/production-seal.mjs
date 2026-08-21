@@ -79,7 +79,8 @@ async function run() {
   const env = {
     ...process.env,
     CWD_HOST: '127.0.0.1',
-    CWD_PORT: String(port)
+    CWD_PORT: String(port),
+    CWD_WEB_TOKEN: process.env.CWD_WEB_TOKEN || crypto.randomBytes(32).toString('hex')
   };
   const binary = resolveCodexBinary(env);
   env.CODEX_BIN = binary;
@@ -138,6 +139,17 @@ async function run() {
     record('third-party model discovery is live', catalog?.thirdParty?.ok === true && Array.isArray(catalog?.thirdParty?.models) && catalog.thirdParty.models.length > 0, { count: catalog?.thirdParty?.models?.length || 0, error: catalog?.thirdParty?.error || null });
     if (catalog?.official?.ok !== true || officialAccountType !== 'chatgpt') throw new Error('official ChatGPT account proof failed');
     if (catalog?.thirdParty?.ok !== true || !catalog.thirdParty.models?.length) throw new Error('third-party model discovery failed');
+
+    const connectivity = await requestJson(base, env, '/api/provider/connectivity', 'POST', {});
+    const connectivityResults = Array.isArray(connectivity?.results) ? connectivity.results : [];
+    const connectivityPassed = connectivityResults.filter((result) => result.ok === true);
+    record('third-party model connectivity matrix executed', connectivityResults.length === catalog.thirdParty.models.length && connectivityPassed.length > 0, {
+      tested: connectivityResults.length,
+      catalog: catalog.thirdParty.models.length,
+      passed: connectivityPassed.length,
+      failed: connectivityResults.filter((result) => !result.ok).map((result) => ({ model: result.model, protocol: result.protocol, status: result.status, error: result.error }))
+    });
+    if (!connectivityPassed.length) throw new Error('no third-party chat model passed connectivity');
 
     const state = await store.read();
     const routeCandidates = [];

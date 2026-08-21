@@ -56,6 +56,18 @@ test('probe falls back only on unsupported Responses endpoint', async (t) => {
   assert.equal(result.protocol, 'chat'); assert.equal(result.ok, true); assert.equal(chatSeen, true);
 });
 
+test('probe falls back when a Responses shim exposes a Chat-shaped validation error', async (t) => {
+  let chatSeen = false;
+  const { server, base } = await listen((req, res) => {
+    if (req.url === '/v1/responses') { res.writeHead(400); res.end('{"error":{"message":"missing required parameter: expr_path=messages"}}'); return; }
+    if (req.url === '/v1/chat/completions') { chatSeen = true; res.writeHead(200, {'content-type':'text/event-stream'}); res.end('data: [DONE]\n\n'); return; }
+    res.writeHead(500).end();
+  });
+  t.after(() => server.close());
+  const result = await probeProvider({ baseUrl: base, apiKey:'k', model:'m' });
+  assert.equal(result.protocol, 'chat'); assert.equal(result.ok, true); assert.equal(chatSeen, true);
+});
+
 test('probe does not mask authentication/model errors as chat-only', async (t) => {
   let chatSeen = false;
   const { server, base } = await listen((req, res) => {

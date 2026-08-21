@@ -28,6 +28,17 @@ export function endpoints(baseUrl) {
 
 function withPath(url, pathname) { const u = new URL(url); u.pathname = pathname || '/'; return u.toString(); }
 export function unsupportedEndpoint(status, bodyText = '') { return UNSUPPORTED_CODES.has(status) || UNSUPPORTED_PATTERNS.some((r) => r.test(bodyText)); }
+const PROTOCOL_MISMATCH_PATTERNS = [
+  /expr_path\s*=\s*messages/i,
+  /missing\s+(?:required\s+)?(?:parameter|field).*messages/i,
+  /messages.*(?:missing|required|too short)/i,
+  /['"]messages['"]/i,
+  /stream\s+must\s+be\s+set\s+to\s+true/i,
+  /invalid\s+input\s+type/i,
+  /convert_request_failed/i,
+  /not\s+implemented/i
+];
+export function shouldTryChatFallback(status, bodyText = '') { return unsupportedEndpoint(status, bodyText) || (status >= 500 && status < 504) || (status !== 401 && status !== 403 && PROTOCOL_MISMATCH_PATTERNS.some((pattern) => pattern.test(bodyText))); }
 
 function authHeaders(apiKey, extraHeaders = {}) {
   return { 'content-type': 'application/json', ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}), ...extraHeaders };
@@ -58,18 +69,18 @@ export async function probeProvider({ baseUrl, apiKey, model, timeoutMs = 10000,
   if (!model?.trim()) throw new Error('model is required for protocol detection');
   const ep = endpoints(baseUrl);
   const common = { method: 'POST', headers: authHeaders(apiKey, extraHeaders), signal: AbortSignal.timeout(timeoutMs) };
-  const responsesBody = { model, input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Reply only OK' }] }], max_output_tokens: 1, stream: false };
+  const responsesBody = { model, input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Reply only OK' }] }], max_output_tokens: 1, stream: true };
   const rr = await fetchImpl(ep.responses, { ...common, body: JSON.stringify(responsesBody) });
   const rrText = await rr.text();
   if (rr.ok) return { protocol: 'responses', ok: true, endpoint: ep.responses, status: rr.status };
-  if (!unsupportedEndpoint(rr.status, rrText)) {
+  if (!shouldTryChatFallback(rr.status, rrText)) {
     return { protocol: 'responses', ok: false, endpoint: ep.responses, status: rr.status, error: trimError(rrText), endpointExists: true };
   }
-  const chatBody = { model, messages: [{ role: 'user', content: 'Reply only OK' }], max_tokens: 1, stream: false };
+  const chatBody = { model, messages: [{ role: 'user', content: 'Reply only OK' }], max_tokens: 1, stream: true };
   const cr = await fetchImpl(ep.chat, { ...common, body: JSON.stringify(chatBody) });
   const crText = await cr.text();
   if (cr.ok) return { protocol: 'chat', ok: true, endpoint: ep.chat, status: cr.status, responsesStatus: rr.status };
-  return { protocol: unsupportedEndpoint(cr.status, crText) ? 'unknown' : 'chat', ok: false, endpoint: ep.chat, status: cr.status, error: trimError(crText), responsesStatus: rr.status, endpointExists: !unsupportedEndpoint(cr.status, crText) };
+  return { protocol: shouldTryChatFallback(cr.status, crText) ? 'unknown' : 'chat', ok: false, endpoint: ep.chat, status: cr.status, error: trimError(crText), responsesStatus: rr.status, endpointExists: !shouldTryChatFallback(cr.status, crText) };
 }
 
 function trimError(text) { return String(text || '').replace(/\s+/g, ' ').slice(0, 500); }
