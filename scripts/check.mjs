@@ -16,8 +16,30 @@ for(const root of roots){
     }
   }
 }
-for(const f of ['plugins/codex-worker-delegation/.codex-plugin/plugin.json','plugins/codex-worker-delegation/hooks/hooks.json','plugins/codex-worker-delegation/.mcp.json','.agents/plugins/marketplace.json'])JSON.parse(await fs.readFile(f,'utf8'));
+
+const manifestFiles=['plugins/codex-worker-delegation/.codex-plugin/plugin.json','plugins/codex-worker-delegation/hooks/hooks.json','plugins/codex-worker-delegation/.mcp.json','.agents/plugins/marketplace.json'];
+const manifests={};
+for(const file of manifestFiles) manifests[file]=JSON.parse(await fs.readFile(file,'utf8'));
+
+const pluginPath='plugins/codex-worker-delegation/.codex-plugin/plugin.json';
+const plugin=manifests[pluginPath];
+const prompts=plugin?.interface?.defaultPrompt;
+if(prompts!==undefined){
+  if(!Array.isArray(prompts)) throw new Error(`${pluginPath}: interface.defaultPrompt must be an array`);
+  if(prompts.length>3) throw new Error(`${pluginPath}: interface.defaultPrompt supports at most 3 prompts`);
+  for(const [i,prompt] of prompts.entries()){
+    if(typeof prompt!=='string') throw new Error(`${pluginPath}: interface.defaultPrompt[${i}] must be a string`);
+    if([...prompt].length>128) throw new Error(`${pluginPath}: interface.defaultPrompt[${i}] exceeds Codex 128-character limit`);
+  }
+}
+
+const mcpPath='plugins/codex-worker-delegation/.mcp.json';
+const mcp=manifests[mcpPath];
+for(const name of Object.keys(mcp?.mcpServers||{})){
+  if(!/^[A-Za-z0-9_]+$/.test(name)) throw new Error(`${mcpPath}: MCP server key ${JSON.stringify(name)} must use letters, digits, or underscores so Codex exposes its tools reliably`);
+}
+
 if(failed)process.exit(1);
-console.log('syntax, shell, Web JS, and manifest checks passed');
+console.log('syntax, shell, Web JS, manifest, Codex prompt-length, and MCP key checks passed');
 
 async function walk(dir){const out=[];for(const e of await fs.readdir(dir,{withFileTypes:true})){const p=path.join(dir,e.name);if(e.isDirectory())out.push(...await walk(p));else out.push(p)}return out}

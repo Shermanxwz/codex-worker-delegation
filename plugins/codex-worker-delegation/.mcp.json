@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "codex-worker-delegation": {
+    "codex_worker_delegation": {
       "command": "node",
       "args": ["${PLUGIN_ROOT}/mcp/server.mjs"]
     }
