@@ -1,8 +1,9 @@
 {
   "mcpServers": {
     "codex_worker_delegation": {
-      "command": "node",
-      "args": ["${PLUGIN_ROOT}/mcp/server.mjs"]
+      "command": "./mcp/run.sh",
+      "args": [],
+      "cwd": "."
     }
   }
 }

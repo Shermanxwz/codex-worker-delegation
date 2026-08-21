@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$PLUGIN_ROOT/hooks/policy-hook.mjs\"",
+            "command": "bash \"${PLUGIN_ROOT}/hooks/run-policy.sh\"",
             "timeout": 5,
             "statusMessage": "Applying delegation policy"
           }
