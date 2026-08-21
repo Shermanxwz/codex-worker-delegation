@@ -9,6 +9,7 @@
     "start": "node src/server.mjs",
     "test": "node --test test/*.test.mjs",
     "check": "node scripts/check.mjs",
+    "seal:production": "node scripts/production-seal.mjs",
     "doctor": "node src/cli.mjs doctor",
     "install:codex": "node src/cli.mjs install",
     "official:status": "node src/cli.mjs official"

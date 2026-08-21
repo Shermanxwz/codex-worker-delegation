@@ -144,7 +144,7 @@ async function executeWorker(body, { store, env }) {
     modelProvider: route.provider === 'third_party' ? CODEX_GATEWAY_PROVIDER_ID : 'openai',
     prompt: body.task,
     cwd: body.cwd || process.cwd(),
-    sandbox: roleName === 'verifier' ? 'readOnly' : (body.sandbox || 'workspaceWrite'),
+    sandbox: roleName === 'verifier' ? 'read-only' : (body.sandbox || 'workspace-write'),
     developerInstructions: roleName === 'verifier' ? 'Verify independently. Prefer inspection and tests; do not modify implementation files.' : 'Execute the assigned implementation task and report concrete results.'
   }), { env });
   await store.audit('worker.completed', { mode, role: roleName, provider: route.provider, model: route.model, execution: plan.execution, threadId: result.threadId });
@@ -165,7 +165,7 @@ async function verifyCoexistence({ body, store, codex, env }) {
       modelProvider: CODEX_GATEWAY_PROVIDER_ID,
       prompt: 'Reply with exactly CWD_COEXISTENCE_OK. Do not use tools.',
       cwd: body.cwd || process.cwd(),
-      sandbox: 'readOnly',
+      sandbox: 'read-only',
       developerInstructions: 'This is a read-only provider coexistence probe. Do not use tools or modify files; answer only with the requested marker.',
       timeoutMs: Number(body.timeoutMs || 120000)
     });

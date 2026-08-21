@@ -88,7 +88,7 @@ Command-backed `auth` is intentionally **not combined with `requires_openai_auth
 
 Codex discovery includes the ChatGPT Linux packaged path `/usr/lib/chatgpt/resources/codex`, desktop-managed user paths, explicit `CODEX_CLI_PATH` / `CODEX_BIN`, and `PATH` fallback.
 
-App Server threads use current protocol values including `sandbox: "workspaceWrite"` / `"readOnly"`, explicit `modelProvider`, and `serviceName`. Official model pickers are populated by paginated `model/list` rather than a hard-coded model list.
+App Server threads use the current wire values `sandbox: "workspace-write"`, `"read-only"`, or `"danger-full-access"`; the control plane accepts legacy camelCase aliases at its own API boundary and emits the official hyphenated values. Threads carry an explicit `modelProvider` and `serviceName`. Official model pickers are populated by paginated `model/list` rather than a hard-coded model list.
 
 ## Install
 
@@ -99,6 +99,14 @@ npm run check
 npm test
 npm start
 ```
+
+After configuring a real New API provider on the target Linux machine, run the account-level seal:
+
+```bash
+npm run seal:production
+```
+
+It installs the namespaced provider if needed, checks the packaged Codex runtime, verifies the official account before and after a real third-party thread, checks the configured worker route, and exits non-zero unless every requested proof passes. It never prints or rewrites API keys or `auth.json`.
 
 Open the loopback Web URL, configure New API, select routing, and press **安装 / 刷新**. Use **真实共存验收** on the real Linux install when you want direct proof that a third-party turn and ChatGPT login coexist in one `CODEX_HOME`.
 
@@ -116,7 +124,7 @@ The plugin-manager installer remains available:
 - Provider URLs reject embedded credentials and non-HTTP(S) schemes.
 - User-supplied custom `Authorization` headers are rejected.
 - `auth.json` stays Codex-owned and is never copied to the third-party provider.
-- Verifier App Server threads use `readOnly`; hook policy also blocks mutation/execution patterns for native verifier roles.
+- Verifier App Server threads use the official `read-only` wire value; hook policy also blocks mutation/execution patterns for native verifier roles.
 
 See `docs/SECURITY.md` for details.
 
