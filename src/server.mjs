@@ -183,7 +183,21 @@ async function executeWorker(body, { store, env, codex }) {
     effort: route.effort || 'auto',
     developerInstructions: roleName === 'verifier' ? 'Verify independently. Prefer inspection and tests; do not modify implementation files.' : 'Execute the assigned implementation task and report concrete results.'
   }), { env });
-  await store.audit('worker.completed', { mode, role: roleName, provider: route.provider, model: route.model, execution: plan.execution, threadId: result.threadId });
+  const completed = result.status === 'completed';
+  await store.audit(completed ? 'worker.completed' : 'worker.failed', {
+    mode,
+    role: roleName,
+    provider: route.provider,
+    model: route.model,
+    execution: plan.execution,
+    threadId: result.threadId,
+    status: result.status,
+    error: completed ? null : (result.turn?.error || result.error || null)
+  });
+  if (!completed) {
+    const detail = result.turn?.error?.message || result.error || `status=${result.status || 'unknown'}`;
+    throw new Error(`worker execution failed: ${detail}`);
+  }
   return { ...plan, mode, role: roleName, provider: route.provider, model: route.model, ...result };
 }
 

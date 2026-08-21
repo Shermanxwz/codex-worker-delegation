@@ -20,6 +20,25 @@ test('Responses input and tools translate to Chat Completions', () => {
   assert.deepEqual(out.stream_options,{include_usage:true});
 });
 
+test('parallel Responses function calls share one Chat assistant tool-call message', () => {
+  const out = responsesToChat({
+    model:'third-model',
+    input:[
+      {type:'message', role:'user', content:[{type:'input_text', text:'inspect the project'}]},
+      {type:'message', role:'assistant', content:[{type:'output_text', text:'I will inspect it.'}]},
+      {type:'function_call', call_id:'call_1', name:'exec_command', arguments:'{"cmd":"pwd"}'},
+      {type:'function_call', call_id:'call_2', name:'exec_command', arguments:'{"cmd":"ls"}'},
+      {type:'function_call_output', call_id:'call_1', output:'/tmp/project'},
+      {type:'function_call_output', call_id:'call_2', output:'package.json'}
+    ]
+  });
+  assert.equal(out.messages.length, 4);
+  assert.equal(out.messages[1].role,'assistant');
+  assert.equal(out.messages[1].content,'I will inspect it.');
+  assert.deepEqual(out.messages[1].tool_calls.map((call) => call.id),['call_1','call_2']);
+  assert.deepEqual(out.messages.slice(2).map((message) => message.tool_call_id),['call_1','call_2']);
+});
+
 test('chat stream becomes Codex-consumable Responses SSE including function_call item', () => {
   const c = new ChatSseToResponses({model:'m'});
   let s = c.start();

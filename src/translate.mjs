@@ -20,18 +20,35 @@ function chatContent(content) {
 
 export function responsesToChat(body, { forwardReasoningEffort = false } = {}) {
   const messages = [];
+  let pendingAssistant = null;
+  const flushAssistant = () => {
+    if (!pendingAssistant) return;
+    if (!pendingAssistant.tool_calls?.length) delete pendingAssistant.tool_calls;
+    messages.push(pendingAssistant);
+    pendingAssistant = null;
+  };
   if (body.instructions) messages.push({ role: 'system', content: String(body.instructions) });
   const input = typeof body.input === 'string' ? [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: body.input }] }] : (body.input || []);
   for (const item of input) {
     if (item?.type === 'message' || (!item?.type && item?.role)) {
       const role = item.role === 'developer' ? 'system' : item.role;
-      messages.push({ role: role || 'user', content: chatContent(item.content) });
+      if (role === 'assistant') {
+        flushAssistant();
+        pendingAssistant = { role, content: chatContent(item.content) };
+      } else {
+        flushAssistant();
+        messages.push({ role: role || 'user', content: chatContent(item.content) });
+      }
     } else if (item?.type === 'function_call') {
-      messages.push({ role: 'assistant', content: null, tool_calls: [{ id: item.call_id || item.id, type: 'function', function: { name: item.name, arguments: typeof item.arguments === 'string' ? item.arguments : JSON.stringify(item.arguments || {}) } }] });
+      pendingAssistant ||= { role: 'assistant', content: null, tool_calls: [] };
+      pendingAssistant.tool_calls ||= [];
+      pendingAssistant.tool_calls.push({ id: item.call_id || item.id, type: 'function', function: { name: item.name, arguments: typeof item.arguments === 'string' ? item.arguments : JSON.stringify(item.arguments || {}) } });
     } else if (item?.type === 'function_call_output') {
+      flushAssistant();
       messages.push({ role: 'tool', tool_call_id: item.call_id, content: typeof item.output === 'string' ? item.output : JSON.stringify(item.output ?? '') });
     }
   }
+  flushAssistant();
   const tools = (body.tools || []).filter((t) => t?.type === 'function').map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters || {}, ...(t.strict !== undefined ? { strict: t.strict } : {}) } }));
   const result = { model: body.model, messages, stream: body.stream !== false };
   if (tools.length) result.tools = tools;
