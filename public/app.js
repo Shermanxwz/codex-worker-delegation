@@ -14,6 +14,8 @@ let coexistenceProof = null;
 let authState = null;
 let currentPage = 'dashboard';
 const modelTestResults = new Map();
+const GENERIC_THIRD_PARTY_EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh', 'max'];
+const EFFORT_LABELS = { auto: '模型 / 上游默认', none: 'none · 不额外推理', low: 'low · 快速', medium: 'medium · 平衡', high: 'high · 深度', xhigh: 'xhigh · 更深', max: 'max · 最大', ultra: 'ultra · 自动协作' };
 
 async function api(path, opts = {}) {
   const response = await fetch(path, { ...opts, headers: { 'content-type': 'application/json', ...(opts.headers || {}) } });
@@ -37,6 +39,25 @@ function modeLabel(mode) { return MODE_LABELS[mode] || mode; }
 function modelRows(provider) {
   const rows = catalog?.[providerKey(provider)]?.models || [];
   return rows.map((model) => ({ id: model.model || model.id, name: model.displayName || model.name || model.model || model.id })).filter((model) => model.id);
+}
+
+function modelInfo(provider, model) {
+  return (catalog?.[providerKey(provider)]?.models || []).find((row) => (row.model || row.id) === model) || null;
+}
+
+function supportedEfforts(provider, model) {
+  const info = modelInfo(provider, model);
+  const advertised = info?.supportedReasoningEfforts || info?.supported_reasoning_levels;
+  if (Array.isArray(advertised) && advertised.length) {
+    return advertised.map((item) => typeof item === 'string' ? item : (item.reasoningEffort || item.effort)).filter(Boolean);
+  }
+  return provider === 'third_party' ? GENERIC_THIRD_PARTY_EFFORTS : ['low', 'medium', 'high', 'xhigh', 'max'];
+}
+
+function effortOptions(provider, model, current = 'auto') {
+  const values = ['auto', ...supportedEfforts(provider, model)];
+  if (current && !values.includes(current)) values.splice(1, 0, current);
+  return [...new Set(values)].map((value) => `<option value="${esc(value)}" ${value === current ? 'selected' : ''}>${esc(EFFORT_LABELS[value] || value)}</option>`).join('');
 }
 
 function navigate(page) {
@@ -87,27 +108,37 @@ function routeRow(mode, role, route) {
   const provider = route?.provider || 'official';
   const rows = modelRows(provider);
   const current = route?.model || '';
+  const effort = route?.effort || 'auto';
   const options = [...rows];
   if (current && !options.some((model) => model.id === current)) options.unshift({ id: current, name: `${current} · 当前/手填` });
-  return `<div class="route-row" data-route="${id}"><div class="route-role"><b>${role.toUpperCase()}</b><span class="route-kind" id="kind-${id}"></span></div><select class="route-provider" data-mode="${mode}" data-role="${role}"><option value="official" ${provider === 'official' ? 'selected' : ''}>Official ChatGPT</option><option value="third_party" ${provider === 'third_party' ? 'selected' : ''}>New API</option></select><div class="model-field"><select class="route-model" data-mode="${mode}" data-role="${role}">${options.map((model) => `<option value="${esc(model.id)}" ${model.id === current ? 'selected' : ''}>${esc(model.name)} (${esc(model.id)})</option>`).join('')}<option value="__custom__">手动输入…</option></select><input class="route-custom" data-mode="${mode}" data-role="${role}" value="${esc(current && !rows.some((model) => model.id === current) ? current : '')}" placeholder="模型 ID" hidden></div></div>`;
+  return `<div class="route-row" data-route="${id}"><div class="route-role"><b>${role.toUpperCase()}</b><span class="route-kind" id="kind-${id}"></span></div><select class="route-provider" data-mode="${mode}" data-role="${role}"><option value="official" ${provider === 'official' ? 'selected' : ''}>Official ChatGPT</option><option value="third_party" ${provider === 'third_party' ? 'selected' : ''}>New API</option></select><div class="model-field"><select class="route-model" data-mode="${mode}" data-role="${role}">${options.map((model) => `<option value="${esc(model.id)}" ${model.id === current ? 'selected' : ''}>${esc(model.name)} (${esc(model.id)})</option>`).join('')}<option value="__custom__">手动输入…</option></select><input class="route-custom" data-mode="${mode}" data-role="${role}" value="${esc(current && !rows.some((model) => model.id === current) ? current : '')}" placeholder="模型 ID" hidden></div><label class="effort-field">思考强度<select class="route-effort" data-mode="${mode}" data-role="${role}">${effortOptions(provider, current, effort)}</select></label></div>`;
 }
 
 function renderRouting() {
   if (!state) return;
   $('routing').innerHTML = MODES.map((mode) => `<div class="mode-routing ${mode === state.mode ? 'current' : ''}"><div class="mode-title"><h3>${modeLabel(mode)}</h3><span>${mode === state.mode ? '当前模式' : ''}</span></div>${VISIBLE_ROLES[mode].map((role) => routeRow(mode, role, state.routing?.[mode]?.[role])).join('')}</div>`).join('');
   document.querySelectorAll('.route-provider').forEach((element) => element.onchange = () => { syncRouteModels(element.dataset.mode, element.dataset.role, element.value); updateKinds(); });
-  document.querySelectorAll('.route-model').forEach((element) => element.onchange = () => { const custom = findCustom(element.dataset.mode, element.dataset.role); custom.hidden = element.value !== '__custom__'; if (!custom.hidden) custom.focus(); updateKinds(); });
+  document.querySelectorAll('.route-model').forEach((element) => element.onchange = () => { const custom = findCustom(element.dataset.mode, element.dataset.role); custom.hidden = element.value !== '__custom__'; if (!custom.hidden) custom.focus(); syncRouteEffort(element.dataset.mode, element.dataset.role); updateKinds(); });
   updateKinds();
 }
 
 function findCustom(mode, role) { return document.querySelector(`.route-custom[data-mode="${mode}"][data-role="${role}"]`); }
 function findModel(mode, role) { const select = document.querySelector(`.route-model[data-mode="${mode}"][data-role="${role}"]`); const custom = findCustom(mode, role); return select?.value === '__custom__' ? custom.value.trim() : (select?.value || custom?.value || '').trim(); }
 function findProvider(mode, role) { return document.querySelector(`.route-provider[data-mode="${mode}"][data-role="${role}"]`)?.value || 'official'; }
+function findEffort(mode, role) { return document.querySelector(`.route-effort[data-mode="${mode}"][data-role="${role}"]`)?.value || 'auto'; }
 function syncRouteModels(mode, role, provider) {
   const select = document.querySelector(`.route-model[data-mode="${mode}"][data-role="${role}"]`); const custom = findCustom(mode, role); const previous = findModel(mode, role); const rows = modelRows(provider);
   select.innerHTML = rows.map((model) => `<option value="${esc(model.id)}">${esc(model.name)} (${esc(model.id)})</option>`).join('') + '<option value="__custom__">手动输入…</option>';
   if (rows.some((model) => model.id === previous)) select.value = previous; else { select.value = '__custom__'; custom.value = previous; }
   custom.hidden = select.value !== '__custom__';
+  syncRouteEffort(mode, role);
+}
+function syncRouteEffort(mode, role) {
+  const select = document.querySelector(`.route-effort[data-mode="${mode}"][data-role="${role}"]`);
+  if (!select) return;
+  const previous = select.value || 'auto'; const provider = findProvider(mode, role); const model = findModel(mode, role);
+  select.innerHTML = effortOptions(provider, model, previous);
+  if (!Array.from(select.options).some((option) => option.value === previous)) select.value = 'auto';
 }
 function routeKind(mode, role) { if (role === 'main') return mode === 'AUTO' ? 'Primary model' : 'Root Thread'; return 'Worker Thread'; }
 function updateKinds() { for (const mode of MODES) for (const role of VISIBLE_ROLES[mode]) { const node = $(`kind-${mode}-${role}`); if (node) node.textContent = routeKind(mode, role); } }
@@ -202,7 +233,7 @@ document.querySelectorAll('[data-page-link]').forEach((link) => link.addEventLis
 document.querySelectorAll('.modes [data-mode]').forEach((button) => button.onclick = async () => { try { await api('/api/mode', { method: 'PUT', body: JSON.stringify({ mode: button.dataset.mode }) }); coexistenceProof = null; await refresh({ catalogToo: false }); } catch (error) { $('routingResult').textContent = error.message; } });
 $('dashboardRefresh').onclick = () => refresh();
 $('saveProvider').onclick = async () => { try { await api('/api/provider', { method: 'PUT', body: JSON.stringify({ name: 'New API', baseUrl: $('baseUrl').value.trim(), apiKey: $('apiKey').value, protocol: $('protocol').value }) }); $('apiKey').value = ''; coexistenceProof = null; $('providerResult').textContent = 'New API 已保存，正在刷新模型目录…'; await refresh(); navigate('provider'); } catch (error) { $('providerResult').textContent = error.message; } };
-$('saveRouting').onclick = async () => { try { for (const mode of MODES) { const roles = {}; for (const role of VISIBLE_ROLES[mode]) roles[role] = { provider: findProvider(mode, role), model: findModel(mode, role) }; await api('/api/routing', { method: 'PUT', body: JSON.stringify({ mode, roles }) }); } coexistenceProof = null; $('routingResult').textContent = '路由已保存；Verifier 会按模式继承，不会另存一个模型。'; await refresh({ catalogToo: false }); } catch (error) { $('routingResult').textContent = error.stack || error.message; } };
+$('saveRouting').onclick = async () => { try { for (const mode of MODES) { const roles = {}; for (const role of VISIBLE_ROLES[mode]) roles[role] = { provider: findProvider(mode, role), model: findModel(mode, role), effort: findEffort(mode, role) }; await api('/api/routing', { method: 'PUT', body: JSON.stringify({ mode, roles }) }); } coexistenceProof = null; $('routingResult').textContent = '路由与思考强度已保存；显式强度会同步到 Codex turn/start，Verifier 按模式继承。'; await refresh({ catalogToo: false }); } catch (error) { $('routingResult').textContent = error.stack || error.message; } };
 $('probe').onclick = async () => { try { $('providerResult').textContent = '正在探测…'; const model = selectedThirdPartyModel() || catalog.thirdParty?.models?.[0]?.id || ''; $('providerResult').textContent = JSON.stringify(await api('/api/provider/probe', { method: 'POST', body: JSON.stringify({ model }) }), null, 2); await refresh({ catalogToo: false }); } catch (error) { $('providerResult').textContent = error.message; } };
 $('testAllModels').onclick = () => runConnectivity();
 $('install').onclick = async () => { try { $('integrationState').textContent = '正在安装 / 刷新 namespaced provider…'; await api('/api/codex/install', { method: 'POST' }); coexistenceProof = null; await refresh(); navigate('integration'); } catch (error) { $('integrationState').textContent = error.stack || error.message; } };

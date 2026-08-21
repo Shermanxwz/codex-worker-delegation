@@ -4,6 +4,7 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 
 const DEFAULT_TIMEOUT_MS = 15000;
+const REASONING_EFFORTS = new Set(['auto', 'none', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
 const SANDBOX_ALIASES = new Map([
   ['read-only', 'read-only'], ['readonly', 'read-only'], ['readOnly', 'read-only'],
   ['workspace-write', 'workspace-write'], ['workspacewrite', 'workspace-write'], ['workspaceWrite', 'workspace-write'],
@@ -145,10 +146,11 @@ export class CodexAppServerClient {
     return all;
   }
 
-  async runThread({ model, modelProvider, prompt, cwd = process.cwd(), sandbox = 'workspace-write', developerInstructions, timeoutMs = 180000 }) {
+  async runThread({ model, modelProvider, prompt, cwd = process.cwd(), sandbox = 'workspace-write', developerInstructions, effort = 'auto', timeoutMs = 180000 }) {
     if (!model) throw new Error('model is required');
     if (!modelProvider) throw new Error('modelProvider is required');
     if (!prompt?.trim()) throw new Error('prompt is required');
+    if (!REASONING_EFFORTS.has(effort)) throw new Error(`unsupported reasoning effort: ${effort}`);
     const started = await this.request('thread/start', {
       model,
       modelProvider,
@@ -162,7 +164,11 @@ export class CodexAppServerClient {
     const threadId = started?.thread?.id;
     if (!threadId) throw new Error(`thread/start did not return a thread id: ${JSON.stringify(started)}`);
     const completion = this.waitForNotification('turn/completed', (params) => params?.threadId === threadId, timeoutMs);
-    await this.request('turn/start', { threadId, input: [{ type: 'text', text: String(prompt), text_elements: [] }] });
+    await this.request('turn/start', {
+      threadId,
+      input: [{ type: 'text', text: String(prompt), text_elements: [] }],
+      ...(effort !== 'auto' ? { effort } : {})
+    });
     const params = await completion;
     const items = params?.turn?.items || [];
     const messages = items.filter((item) => item?.type === 'agentMessage' && typeof item.text === 'string').map((item) => item.text);
@@ -170,6 +176,7 @@ export class CodexAppServerClient {
       threadId,
       model: started?.model || model,
       modelProvider: started?.modelProvider || modelProvider,
+      effort,
       status: params?.turn?.status || 'completed',
       output: messages.at(-1) || '',
       messages,

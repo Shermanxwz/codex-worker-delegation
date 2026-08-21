@@ -3,7 +3,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { statePath, auditPath, gatewayTokenPath } from './paths.mjs';
 
-const role = (provider = 'official', model = '') => ({ provider, model });
+export const REASONING_EFFORTS = Object.freeze(['auto', 'none', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+const role = (provider = 'official', model = '', effort = 'auto') => ({ provider, model, effort });
 const routingDefaults = () => ({
   AUTO: { main: role('official'), worker: role('official'), verifier: role('official') },
   DELEGATE: { main: role('official'), worker: role('third_party'), verifier: role('third_party') },
@@ -17,7 +18,7 @@ export const ROUTING_ROLES = Object.freeze({
 });
 
 export const DEFAULT_STATE = Object.freeze({
-  schemaVersion: 3,
+  schemaVersion: 4,
   mode: 'AUTO',
   provider: null,
   protocolCache: {},
@@ -42,7 +43,8 @@ function normalizeRole(value, fallback) {
     ? value.provider
     : fallback.provider;
   const model = typeof value?.model === 'string' ? value.model.trim() : fallback.model;
-  return { provider, model };
+  const effort = REASONING_EFFORTS.includes(value?.effort) ? value.effort : (fallback.effort || 'auto');
+  return { provider, model, effort };
 }
 
 function normalizeRouting(value, legacyModels = {}) {

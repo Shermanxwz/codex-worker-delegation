@@ -53,6 +53,7 @@ The Web UI owns all normal operations:
 - New API Base URL + key + protocol configuration.
 - Per-model protocol probe/cache.
 - Install/refresh of the namespaced Codex provider and agent roles.
+- Per-route reasoning effort selection with `auto` plus the effort levels advertised by the selected official model; explicit values are sent as native App Server `turn/start.effort`.
 - Independent jump pages for access protection, New API configuration, model routing, model connectivity, and Codex integration.
 - **真实共存验收** runtime proof.
 - Real route execution for Worker / Verifier.
@@ -112,7 +113,7 @@ npm run seal:production
 
 It installs the namespaced provider if needed, checks the packaged Codex runtime, runs the complete third-party model connectivity matrix, verifies the official account before and after a real third-party thread, checks the configured worker route, and exits non-zero unless the requested core proofs pass. It never prints or rewrites API keys or `auth.json`.
 
-Open the loopback Web URL, set and confirm the strong control-plane password, configure New API, select routing, and press **安装 / 刷新**. The UI is split into independent pages for access protection, provider configuration, routing, model connectivity, and Codex integration. The routing surface intentionally exposes one model for AUTO, Main + Worker for WORKER, and Main only for MAIN. Verifier is an internal read-only check that inherits Worker. New API models are available through the namespaced provider and its native catalog format, but they do not merge into the signed-in official ChatGPT `openai` picker; the two providers can still run in the same local session through role routing.
+Open the loopback Web URL, set and confirm the strong control-plane password, configure New API, select routing and reasoning effort, and press **安装 / 刷新**. The UI is split into independent pages for access protection, provider configuration, routing, model connectivity, and Codex integration. The routing surface intentionally exposes one model for AUTO, Main + Worker for WORKER, and Main only for MAIN. Verifier is an internal read-only check that inherits Worker. New API models are available through the namespaced provider and its native catalog format, but they do not merge into the signed-in official ChatGPT `openai` picker; the two providers can still run in the same local session through role routing. A concrete effort selected for a third-party model is forwarded through the gateway; `auto` leaves the upstream default in control.
 
 The plugin-manager installer remains available:
 

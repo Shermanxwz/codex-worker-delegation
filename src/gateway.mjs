@@ -3,8 +3,15 @@ import { responsesToChat, convertChatSse, chatJsonToResponses } from './translat
 
 async function readErrorBody(response) { try { return await response.clone().text(); } catch { return ''; } }
 
-function withoutForwardedReasoning(body, provider) {
-  if (provider.forwardReasoningEffort === true || !body?.reasoning?.effort) return body;
+function hasExplicitRouteEffort(state, model, effort) {
+  if (!state?.routing || !model || !effort || effort === 'auto') return false;
+  return Object.values(state.routing).some((routes) => Object.values(routes || {}).some((route) =>
+    route?.provider === 'third_party' && route.model === model && route.effort === effort
+  ));
+}
+
+function withoutForwardedReasoning(body, provider, state) {
+  if (provider.forwardReasoningEffort === true || !body?.reasoning?.effort || hasExplicitRouteEffort(state, body.model, body.reasoning.effort)) return body;
   const reasoning = { ...body.reasoning };
   delete reasoning.effort;
   const next = { ...body };
@@ -31,15 +38,15 @@ export class ResponsesGateway {
     const cached = state.protocolCache?.[model];
     const protocol = provider.protocol === 'auto' ? cached?.protocol : provider.protocol;
 
-    if (protocol === 'chat') return this.#chat(res, body, ep.chat, headers, provider);
-    if (protocol === 'responses') return this.#responses(res, withoutForwardedReasoning(body, provider), ep.responses, headers);
+    if (protocol === 'chat') return this.#chat(res, body, ep.chat, headers, provider, state);
+    if (protocol === 'responses') return this.#responses(res, withoutForwardedReasoning(body, provider, state), ep.responses, headers);
 
-    const upstream = await this.fetchImpl(ep.responses, { method: 'POST', headers, body: JSON.stringify(withoutForwardedReasoning(body, provider)) });
+    const upstream = await this.fetchImpl(ep.responses, { method: 'POST', headers, body: JSON.stringify(withoutForwardedReasoning(body, provider, state)) });
     if (!upstream.ok) {
       const errorText = await readErrorBody(upstream);
       if (shouldTryChatFallback(upstream.status, errorText)) {
         await this.#cache(model, 'chat');
-        return this.#chat(res, body, ep.chat, headers, provider);
+        return this.#chat(res, body, ep.chat, headers, provider, state);
       }
     }
     if (upstream.ok) await this.#cache(model, 'responses');
@@ -50,8 +57,8 @@ export class ResponsesGateway {
     return pipeFetch(await this.fetchImpl(url, { method: 'POST', headers, body: JSON.stringify(body) }), res);
   }
 
-  async #chat(res, body, url, headers, provider) {
-    const chatBody = responsesToChat(body, { forwardReasoningEffort: provider.forwardReasoningEffort === true });
+  async #chat(res, body, url, headers, provider, state) {
+    const chatBody = responsesToChat(withoutForwardedReasoning(body, provider, state), { forwardReasoningEffort: true });
     const upstream = await this.fetchImpl(url, { method: 'POST', headers, body: JSON.stringify(chatBody) });
     if (!upstream.ok) return pipeFetch(upstream, res);
     if (body.stream === false) return json(res, 200, await chatJsonToResponses(await upstream.json(), body.model));

@@ -67,8 +67,8 @@
         </section>
 
         <section class="page" data-page="routing" hidden>
-          <div class="page-heading"><div><p class="eyebrow">ROUTING</p><h1>模型路由</h1><p class="lead">只暴露真正有意义的选择：AUTO 一个模型，WORKER 两个模型，MAIN 一个模型。Verifier 不再占用独立选择器。</p></div><button id="saveRouting">保存路由</button></div>
-          <div class="card"><div class="modes"><button data-mode="AUTO">AUTO</button><button data-mode="DELEGATE">WORKER</button><button data-mode="MAIN">MAIN</button></div><p id="modeHelp" class="muted"></p><div id="routing"></div><div class="legend"><span><b>AUTO</b>：一个主模型，Worker / Verifier 自动沿用</span><span><b>WORKER</b>：Main 协调 + Worker 执行</span><span><b>MAIN</b>：只运行主线程</span></div><pre id="routingResult" class="compact"></pre></div>
+          <div class="page-heading"><div><p class="eyebrow">ROUTING</p><h1>模型路由</h1><p class="lead">只暴露真正有意义的选择：AUTO 一个模型，WORKER 两个模型，MAIN 一个模型。每个模型都可以单独设定思考强度，并同步到 Codex 的原生 turn/start。</p></div><button id="saveRouting">保存路由</button></div>
+          <div class="card"><div class="modes"><button data-mode="AUTO">AUTO</button><button data-mode="DELEGATE">WORKER</button><button data-mode="MAIN">MAIN</button></div><p id="modeHelp" class="muted"></p><div id="routing"></div><div class="legend"><span><b>AUTO</b>：一个主模型，Worker / Verifier 自动沿用</span><span><b>WORKER</b>：Main 协调 + Worker 执行</span><span><b>MAIN</b>：只运行主线程</span><span><b>思考强度</b>：模型默认或显式 effort；第三方只转发网页明确选择的值</span></div><pre id="routingResult" class="compact"></pre></div>
         </section>
 
         <section class="page" data-page="connectivity" hidden>

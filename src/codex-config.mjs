@@ -12,6 +12,16 @@ const MANAGED_SECTIONS = new Set([
 
 function quote(value) { return JSON.stringify(String(value)); }
 function sectionName(line) { const m = line.match(/^\s*\[([^\]]+)]\s*(?:#.*)?$/); return m?.[1]?.trim() || null; }
+function setTopLevelScalar(text, key, value) {
+  const lines = text.split(/\r?\n/); let section = null; let replaced = false;
+  const next = lines.map((line) => {
+    const currentSection = sectionName(line); if (currentSection) { section = currentSection; return line; }
+    if (!section && new RegExp(`^\\s*${key}\\s*=`).test(line)) { replaced = true; return `${key} = ${quote(value)}`; }
+    return line;
+  });
+  if (!replaced) next.unshift(`${key} = ${quote(value)}`);
+  return next.join('\n');
+}
 
 export function inspectTopLevel(text) {
   const found = {}; let section = null;
@@ -64,6 +74,15 @@ export class CodexConfigManager {
   async read() { try { return await fs.readFile(this.file, 'utf8'); } catch (e) { if (e.code === 'ENOENT') return ''; throw e; } }
 
   async selectors() { return inspectTopLevel(await this.read()); }
+
+  async setReasoningEffort(effort) {
+    if (!effort || effort === 'auto') return { changed: false, effort: effort || 'auto' };
+    const before = await this.read();
+    const next = setTopLevelScalar(before, 'model_reasoning_effort', effort);
+    if (!sameTopLevelSelectors(inspectTopLevel(before), inspectTopLevel(next))) throw new Error('Refusing to set reasoning effort: official top-level model selector would change');
+    await this.#backupAndWrite(before, next);
+    return { changed: before !== next, effort };
+  }
 
   async install() {
     await fs.mkdir(this.home, { recursive: true, mode: 0o700 });
