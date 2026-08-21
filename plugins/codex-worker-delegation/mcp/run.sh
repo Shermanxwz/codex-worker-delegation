@@ -9,11 +9,13 @@ if [[ ! -f "$server" ]]; then
 fi
 
 # Codex desktop may launch plugin MCP servers with a minimal PATH. Prefer an
-# explicit override, then the bundled runtimes used by ChatGPT/Codex Linux,
-# and finally ordinary PATH lookup for normal Node.js installations.
+# explicit override, then the deployment-pinned runtime, then ChatGPT-bundled
+# runtimes, and finally ordinary PATH lookup.
+data_home="${XDG_DATA_HOME:-${HOME:-}/.local/share}"
 candidates=(
   "${CWD_NODE_PATH:-}"
   "${CODEX_NODE_PATH:-}"
+  "${data_home}/codex-worker-delegation/runtime/node"
   "/usr/lib/chatgpt/resources/cua_node/bin/node"
   "/usr/lib/chatgpt/resources/node/bin/node"
   "${HOME:-}/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node"

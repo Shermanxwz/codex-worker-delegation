@@ -46,7 +46,7 @@ jobs:
         with: {node-version: "22"}
       - name: Install current official Codex package
         run: npm install --no-save @openai/codex
-      - name: Exercise install, service entry, upgrade, rollback, validation, and uninstall
+      - name: Exercise user install, service entry, upgrade, rollback, validation, and uninstall
         shell: bash
         run: |
           set -euo pipefail
@@ -55,19 +55,27 @@ jobs:
           export CWD_INSTALL_ROOT="$HOME/.local/share/codex-worker-delegation"
           export CODEX_BIN="$GITHUB_WORKSPACE/node_modules/.bin/codex"
           export CWD_NODE_BIN="$(command -v node)"
-          export CWD_ALLOW_ROOT_INSTALL=1
+          export CWD_SYSTEMD_SCOPE=user
           export CWD_INSTALL_NO_SYSTEMD=1
           mkdir -p "$CODEX_HOME"
           printf '%s\n' '{"tokens":{"access_token":"CI-PRESERVE"}}' > "$CODEX_HOME/auth.json"
           chmod 600 "$CODEX_HOME/auth.json"
-          auth_before="$(sha256sum "$CODEX_HOME/auth.json" | awk '{print $1}')"
+          auth_before="$(sha256sum "$CODEX_HOME/auth.json" | cut -d ' ' -f1)"
 
           CWD_RELEASE_ID=ci-first bash scripts/install-linux.sh
           CWD_RELEASE_ID=ci-second bash scripts/install-linux.sh
           test "$(cat "$CWD_INSTALL_ROOT/current/.release-id")" = ci-second
           test "$(cat "$CWD_INSTALL_ROOT/previous/.release-id")" = ci-first
+          test "$(cat "$CWD_INSTALL_ROOT/systemd-scope")" = user
+          test -f "$CWD_INSTALL_ROOT/runtime/node"
+          test ! -L "$CWD_INSTALL_ROOT/runtime/node"
 
-          systemd-analyze verify "$HOME/.config/systemd/user/codex-worker-delegation.service"
+          unit="$HOME/.config/systemd/user/codex-worker-delegation.service"
+          systemd-analyze verify "$unit"
+          ! grep -q '^User=' "$unit"
+          grep -Fqx "Environment=HOME=$HOME" "$unit"
+          grep -Fqx "Environment=CODEX_HOME=$CODEX_HOME" "$unit"
+
           CWD_PORT=8878 "$CWD_INSTALL_ROOT/current/scripts/service-entry.sh" >/tmp/cwd-service-entry.log 2>&1 &
           service_pid=$!
           trap 'kill "$service_pid" 2>/dev/null || true' EXIT
@@ -86,9 +94,81 @@ jobs:
           bash "$CWD_INSTALL_ROOT/current/scripts/validate-deployment.sh"
 
           bash "$CWD_INSTALL_ROOT/current/scripts/uninstall-linux.sh"
-          auth_after="$(sha256sum "$CODEX_HOME/auth.json" | awk '{print $1}')"
+          auth_after="$(sha256sum "$CODEX_HOME/auth.json" | cut -d ' ' -f1)"
           test "$auth_before" = "$auth_after"
           ! grep -q 'codex_worker_gateway' "$CODEX_HOME/config.toml"
+          test ! -e "$unit"
+
+  deployment-root-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: {node-version: "22"}
+      - name: Install current official Codex package
+        run: npm install --no-save @openai/codex
+      - name: Exercise first-class root install, service entry, rollback, validation, and uninstall
+        shell: bash
+        run: |
+          set -euo pipefail
+          node_bin="$(command -v node)"
+          codex_bin="$GITHUB_WORKSPACE/node_modules/.bin/codex"
+          root_home="$RUNNER_TEMP/cwd-root-home"
+          root_systemd="$RUNNER_TEMP/cwd-root-systemd"
+          sudo env \
+            HOME="$root_home" \
+            CODEX_HOME="$root_home/.codex" \
+            CWD_INSTALL_ROOT="$root_home/.local/share/codex-worker-delegation" \
+            CWD_SYSTEMD_SCOPE=system \
+            CWD_SYSTEMD_DIR="$root_systemd" \
+            CWD_INSTALL_NO_SYSTEMD=1 \
+            CWD_NODE_BIN="$node_bin" \
+            CODEX_BIN="$codex_bin" \
+            GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
+            bash --noprofile --norc -euxo pipefail -c '
+              mkdir -p "$CODEX_HOME"
+              printf "%s\n" "{\"tokens\":{\"access_token\":\"ROOT-CI-PRESERVE\"}}" > "$CODEX_HOME/auth.json"
+              chmod 600 "$CODEX_HOME/auth.json"
+              auth_before="$(sha256sum "$CODEX_HOME/auth.json" | cut -d " " -f1)"
+
+              CWD_RELEASE_ID=root-ci-first bash "$GITHUB_WORKSPACE/scripts/install-linux.sh"
+              CWD_RELEASE_ID=root-ci-second bash "$GITHUB_WORKSPACE/scripts/install-linux.sh"
+              test "$(cat "$CWD_INSTALL_ROOT/current/.release-id")" = root-ci-second
+              test "$(cat "$CWD_INSTALL_ROOT/previous/.release-id")" = root-ci-first
+              test "$(cat "$CWD_INSTALL_ROOT/systemd-scope")" = system
+              test -f "$CWD_INSTALL_ROOT/runtime/node"
+              test ! -L "$CWD_INSTALL_ROOT/runtime/node"
+
+              unit="$CWD_SYSTEMD_DIR/codex-worker-delegation.service"
+              systemd-analyze verify "$unit"
+              grep -Fxq "User=root" "$unit"
+              grep -Fxq "Group=root" "$unit"
+              grep -Fxq "Environment=HOME=$HOME" "$unit"
+              grep -Fxq "Environment=CODEX_HOME=$CODEX_HOME" "$unit"
+
+              CWD_PORT=8879 "$CWD_INSTALL_ROOT/current/scripts/service-entry.sh" >/tmp/cwd-root-service-entry.log 2>&1 &
+              service_pid=$!
+              trap "kill $service_pid 2>/dev/null || true" EXIT
+              for _ in $(seq 1 40); do
+                if curl --silent --fail --max-time 1 http://127.0.0.1:8879/api/health >/dev/null 2>&1; then break; fi
+                sleep 0.25
+              done
+              curl --silent --fail --max-time 2 http://127.0.0.1:8879/api/health
+              kill "$service_pid"
+              wait "$service_pid" || true
+              trap - EXIT
+
+              bash "$CWD_INSTALL_ROOT/current/scripts/rollback-linux.sh"
+              test "$(cat "$CWD_INSTALL_ROOT/current/.release-id")" = root-ci-first
+              test "$(cat "$CWD_INSTALL_ROOT/previous/.release-id")" = root-ci-second
+              bash "$CWD_INSTALL_ROOT/current/scripts/validate-deployment.sh"
+
+              bash "$CWD_INSTALL_ROOT/current/scripts/uninstall-linux.sh"
+              auth_after="$(sha256sum "$CODEX_HOME/auth.json" | cut -d " " -f1)"
+              test "$auth_before" = "$auth_after"
+              ! grep -q "codex_worker_gateway" "$CODEX_HOME/config.toml"
+              test ! -e "$unit"
+            '
 
   chatgpt-linux-baseline:
     runs-on: ubuntu-24.04

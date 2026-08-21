@@ -1,17 +1,19 @@
 [Unit]
-Description=Codex Worker Delegation local control plane
+Description=Codex Worker Delegation root control plane
 Documentation=https://github.com/Shermanxwz/codex-worker-delegation
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
+User=root
+Group=root
 WorkingDirectory=@@INSTALL_ROOT@@/current
 Environment=HOME=@@HOME@@
 Environment=CODEX_HOME=@@CODEX_HOME@@
 Environment=CWD_HOST=127.0.0.1
 Environment=CWD_PORT=8788
-Environment=PATH=@@HOME@@/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=@@HOME@@/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=CWD_NODE_BIN=@@INSTALL_ROOT@@/runtime/node
 ExecStart=@@INSTALL_ROOT@@/current/scripts/service-entry.sh
 Restart=on-failure
@@ -19,9 +21,9 @@ RestartSec=2
 TimeoutStopSec=20
 UMask=0077
 
-# Harden the control plane without making delegated workspaces read-only.
-# ProtectSystem=strict is intentionally not used because delegated Codex
-# workers must retain normal write access to explicitly selected workspaces.
+# Root is a supported deployment identity when ChatGPT Linux/Codex itself is
+# running as root. Drop ambient/bounding capabilities and prohibit privilege
+# gain while keeping /root and delegated workspaces available to Codex.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
@@ -37,4 +39,4 @@ AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target

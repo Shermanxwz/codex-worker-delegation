@@ -2,7 +2,6 @@ import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import zlib from 'node:zlib';
 import { StateStore, publicState, activeRouting, setRoutingMode, REASONING_EFFORTS } from './store.mjs';
 import { SecretVault } from './vault.mjs';
 import { ResponsesGateway } from './gateway.mjs';
@@ -12,6 +11,7 @@ import { CodexConfigManager, CODEX_GATEWAY_PROVIDER_ID, inspectTopLevel, sameTop
 import { withCodexAppServer, resolveCodexBinary } from './app-server.mjs';
 import { executionPlan } from './policy.mjs';
 import { WebAuth, MIN_PASSWORD_LENGTH } from './web-auth.mjs';
+import { readJson } from './http-json.mjs';
 import { WorkerTaskManager, WORKER_MAX_TOTAL_TIMEOUT_MS, isTerminalTask, isWorkerTimeout, errorDetails, normalizeWorkerTimeout } from './worker-jobs.mjs';
 export { executionPlan } from './policy.mjs';
 
@@ -517,13 +517,6 @@ async function testProviderModels({ models, state, apiKey, fetchImpl }) {
 function sanitizeHeaders(headers) {
   if (!headers || typeof headers !== 'object' || Array.isArray(headers)) return {};
   const out = {}; for (const [k,v] of Object.entries(headers)) if (/^[A-Za-z0-9-]{1,64}$/.test(k) && typeof v === 'string' && k.toLowerCase() !== 'authorization') out[k] = v; return out;
-}
-async function readJson(req, limit = 8 * 1024 * 1024) {
-  let size = 0; const chunks = []; for await (const chunk of req) { size += chunk.length; if (size > limit) throw new Error('request too large'); chunks.push(Buffer.from(chunk)); }
-  if (!chunks.length) return {}; let body = Buffer.concat(chunks);
-  const enc = String(req.headers['content-encoding'] || '').toLowerCase().trim();
-  if (enc === 'zstd') body = zlib.zstdDecompressSync(body); else if (enc === 'gzip') body = zlib.gunzipSync(body); else if (enc === 'br') body = zlib.brotliDecompressSync(body); else if (enc && enc !== 'identity') throw new Error(`unsupported content-encoding: ${enc}`);
-  return JSON.parse(body.toString('utf8'));
 }
 function sendJson(res, status, body, headers = {}) { res.writeHead(status, { 'content-type':'application/json; charset=utf-8', 'cache-control':'no-store', ...headers }); res.end(JSON.stringify(body)); }
 async function serveStatic(urlPath, res) {

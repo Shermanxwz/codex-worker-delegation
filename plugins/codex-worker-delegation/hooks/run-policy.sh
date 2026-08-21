@@ -12,9 +12,11 @@ if [[ ! -f "$policy" ]]; then
   deny 'Codex Worker Delegation policy hook is missing; failing closed.'
 fi
 
+data_home="${XDG_DATA_HOME:-${HOME:-}/.local/share}"
 candidates=(
   "${CWD_NODE_PATH:-}"
   "${CODEX_NODE_PATH:-}"
+  "${data_home}/codex-worker-delegation/runtime/node"
   "/usr/lib/chatgpt/resources/cua_node/bin/node"
   "/usr/lib/chatgpt/resources/node/bin/node"
   "${HOME:-}/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node"

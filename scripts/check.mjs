@@ -60,21 +60,36 @@ for(const key of ['appServerSchemaGenerated','officialPluginManagerInstall','exp
   if(baseline?.acceptance?.[key]!==true) throw new Error(`${baselinePath}: acceptance.${key} must be true before recording a seal baseline`);
 }
 
-const unitPath='deploy/codex-worker-delegation.service';
-const unit=await fs.readFile(unitPath,'utf8');
-for(const required of ['NoNewPrivileges=true','ProtectSystem=full','CapabilityBoundingSet=','AmbientCapabilities=','Environment=CWD_NODE_BIN=%h/.local/share/codex-worker-delegation/runtime/node']){
-  if(!unit.includes(required)) throw new Error(`${unitPath}: missing hardening/runtime contract ${required}`);
+function directiveLines(text){
+  return text.split(/\r?\n/).map((line)=>line.trim()).filter((line)=>line && !line.startsWith('#') && !line.startsWith(';'));
 }
-for(const forbidden of ['User=root','/root/Documents','codex-primary-runtime','ProtectSystem=strict']){
-  if(unit.includes(forbidden)) throw new Error(`${unitPath}: forbidden machine-specific or workspace-breaking setting ${forbidden}`);
+function requireDirective(lines,file,directive){if(!lines.includes(directive))throw new Error(`${file}: missing systemd contract ${directive}`)}
+function forbidDirective(lines,file,directive){if(lines.includes(directive))throw new Error(`${file}: forbidden systemd directive ${directive}`)}
+
+const userUnitPath='deploy/codex-worker-delegation.service';
+const rootUnitPath='deploy/codex-worker-delegation.root.service';
+for(const [unitPath,scope] of [[userUnitPath,'user'],[rootUnitPath,'system']]){
+  const unit=await fs.readFile(unitPath,'utf8');
+  const lines=directiveLines(unit);
+  for(const required of ['NoNewPrivileges=true','ProtectSystem=full','CapabilityBoundingSet=','AmbientCapabilities=','WorkingDirectory=@@INSTALL_ROOT@@/current','Environment=HOME=@@HOME@@','Environment=CODEX_HOME=@@CODEX_HOME@@','Environment=CWD_NODE_BIN=@@INSTALL_ROOT@@/runtime/node']) requireDirective(lines,unitPath,required);
+  forbidDirective(lines,unitPath,'ProtectSystem=strict');
+  for(const forbidden of ['/root/Documents','codex-primary-runtime']) if(unit.includes(forbidden)) throw new Error(`${unitPath}: forbidden development-machine path ${forbidden}`);
+  if(scope==='user'){
+    if(lines.some((line)=>line.startsWith('User=')||line.startsWith('Group='))) throw new Error(`${unitPath}: user service must inherit the invoking desktop Unix identity`);
+    requireDirective(lines,unitPath,'WantedBy=default.target');
+  } else {
+    requireDirective(lines,unitPath,'User=root');
+    requireDirective(lines,unitPath,'Group=root');
+    requireDirective(lines,unitPath,'WantedBy=multi-user.target');
+  }
 }
 
-for(const lifecycleScript of ['scripts/install-linux.sh','scripts/install-service-unit.sh','scripts/rollback-linux.sh','scripts/uninstall-linux.sh','scripts/validate-deployment.sh']){
+for(const lifecycleScript of ['scripts/install-linux.sh','scripts/install-service-unit.sh','scripts/systemd-lib.sh','scripts/rollback-linux.sh','scripts/uninstall-linux.sh','scripts/validate-deployment.sh']){
   const stat=await fs.stat(lifecycleScript);
   if(!stat.isFile()) throw new Error(`${lifecycleScript}: lifecycle script is missing`);
 }
 
 if(failed)process.exit(1);
-console.log('syntax, shell, Web JS, manifest, Codex prompt-length, MCP, Linux deployment, and immutable baseline checks passed');
+console.log('syntax, shell, Web JS, manifest, Codex prompt-length, MCP, dual-scope Linux deployment, and immutable baseline checks passed');
 
 async function walk(dir){const out=[];for(const e of await fs.readdir(dir,{withFileTypes:true})){const p=path.join(dir,e.name);if(e.isDirectory())out.push(...await walk(p));else out.push(p)}return out}
