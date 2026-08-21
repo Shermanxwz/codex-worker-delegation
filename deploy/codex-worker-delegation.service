@@ -1,20 +1,36 @@
 [Unit]
 Description=Codex Worker Delegation local control plane
+Documentation=https://github.com/Shermanxwz/codex-worker-delegation
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
-WorkingDirectory=/root/Documents/Codex/2026-08-21/referenced-chatgpt-conversation-this-is-an/work/codex-worker-delegation
-Environment=HOME=/root
+WorkingDirectory=%h/.local/share/codex-worker-delegation/current
 Environment=CWD_HOST=127.0.0.1
 Environment=CWD_PORT=8788
-Environment=PATH=/root/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=/root/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node /root/Documents/Codex/2026-08-21/referenced-chatgpt-conversation-this-is-an/work/codex-worker-delegation/src/server.mjs
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/share/codex-worker-delegation/current/scripts/service-entry.sh
 Restart=on-failure
 RestartSec=2
+TimeoutStopSec=20
 UMask=0077
 
+# User-service hardening. The service intentionally keeps the user's home
+# reachable because Codex must access ~/.codex and delegated workspace paths.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
