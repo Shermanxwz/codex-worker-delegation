@@ -7,6 +7,7 @@ import { StateStore, publicState, activeRouting, setRoutingMode } from './store.
 import { SecretVault } from './vault.mjs';
 import { ResponsesGateway } from './gateway.mjs';
 import { probeProvider, listProviderModels } from './provider.mjs';
+import { toCodexModelsResponse } from './codex-models.mjs';
 import { CodexConfigManager, CODEX_GATEWAY_PROVIDER_ID, inspectTopLevel, sameTopLevelSelectors } from './codex-config.mjs';
 import { withCodexAppServer, resolveCodexBinary } from './app-server.mjs';
 import { executionPlan } from './policy.mjs';
@@ -32,7 +33,7 @@ export function createApp({ env = process.env, fetchImpl = fetch } = {}) {
     try {
       const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
       if (req.method === 'POST' && url.pathname === '/v1/responses') return gateway.handle(req, res, await readJson(req));
-      if (req.method === 'GET' && url.pathname === '/v1/models') return serveGatewayModels(req, res, { store, vault, fetchImpl });
+      if (req.method === 'GET' && url.pathname === '/v1/models') return serveGatewayModels(req, res, { store, vault, fetchImpl, nativeCatalog: url.searchParams.has('client_version') });
       if (req.method === 'POST' && url.pathname === '/internal/worker/run') {
         if (!await authorizeInternal(req, store)) return sendJson(res, 401, { error: 'invalid internal token' });
         return sendJson(res, 200, await executeWorker(await readJson(req), { store, env, codex }));
@@ -141,12 +142,13 @@ async function authorizeInternal(req, store) {
   return req.headers.authorization === `Bearer ${token}`;
 }
 
-async function serveGatewayModels(req, res, { store, vault, fetchImpl }) {
+async function serveGatewayModels(req, res, { store, vault, fetchImpl, nativeCatalog = false }) {
   if (!await authorizeInternal(req, store)) return sendJson(res, 401, { error: { message: 'Invalid local gateway token', type: 'authentication_error' } });
   const state = await store.read();
   if (!state.provider) return sendJson(res, 503, { error: { message: 'No third-party provider configured', type: 'configuration_error' } });
   const apiKey = await vault.decrypt(state.provider.apiKeyCipher);
   const models = await listProviderModels({ baseUrl: state.provider.baseUrl, apiKey, fetchImpl, extraHeaders: state.provider.headers });
+  if (nativeCatalog) return sendJson(res, 200, toCodexModelsResponse(models));
   return sendJson(res, 200, { object: 'list', data: models.map((item) => ({ id: item.id, object: 'model', owned_by: item.ownedBy || state.provider.name || 'third-party' })) });
 }
 

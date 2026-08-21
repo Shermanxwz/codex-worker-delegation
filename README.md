@@ -90,7 +90,7 @@ Command-backed `auth` is intentionally **not combined with `requires_openai_auth
 
 Codex discovery includes the ChatGPT Linux packaged path `/usr/lib/chatgpt/resources/codex`, desktop-managed user paths, explicit `CODEX_CLI_PATH` / `CODEX_BIN`, and `PATH` fallback.
 
-App Server threads use the current wire values `sandbox: "workspace-write"`, `"read-only"`, or `"danger-full-access"`; the control plane accepts legacy camelCase aliases at its own API boundary and emits the official hyphenated values. Threads carry an explicit `modelProvider` and `serviceName`. Official model pickers are populated by paginated `model/list` rather than a hard-coded model list.
+App Server threads use the current wire values `sandbox: "workspace-write"`, `"read-only"`, or `"danger-full-access"`; the control plane accepts legacy camelCase aliases at its own API boundary and emits the official hyphenated values. Threads carry an explicit `modelProvider` and `serviceName`. Official model pickers are populated by paginated `model/list` rather than a hard-coded model list. The local gateway also answers Codex's native custom-provider catalog request (`/v1/models?client_version=...`) with the internal `models` envelope, while keeping ordinary OpenAI-compatible `/v1/models` responses unchanged.
 
 ## Install
 
@@ -112,7 +112,7 @@ npm run seal:production
 
 It installs the namespaced provider if needed, checks the packaged Codex runtime, runs the complete third-party model connectivity matrix, verifies the official account before and after a real third-party thread, checks the configured worker route, and exits non-zero unless the requested core proofs pass. It never prints or rewrites API keys or `auth.json`.
 
-Open the loopback Web URL, set and confirm the strong control-plane password, configure New API, select routing, and press **安装 / 刷新**. The UI is split into independent pages for access protection, provider configuration, routing, model connectivity, and Codex integration. The routing surface intentionally exposes one model for AUTO, Main + Worker for WORKER, and Main only for MAIN. Verifier is an internal read-only check that inherits Worker. New API models stay in the namespaced control-plane route and do not merge into the official ChatGPT model picker.
+Open the loopback Web URL, set and confirm the strong control-plane password, configure New API, select routing, and press **安装 / 刷新**. The UI is split into independent pages for access protection, provider configuration, routing, model connectivity, and Codex integration. The routing surface intentionally exposes one model for AUTO, Main + Worker for WORKER, and Main only for MAIN. Verifier is an internal read-only check that inherits Worker. New API models are available through the namespaced provider and its native catalog format, but they do not merge into the signed-in official ChatGPT `openai` picker; the two providers can still run in the same local session through role routing.
 
 The plugin-manager installer remains available:
 
