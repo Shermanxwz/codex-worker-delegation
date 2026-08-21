@@ -13,6 +13,7 @@
     "check": "node scripts/check.mjs",
     "seal:production": "node scripts/production-seal.mjs",
     "seal:release": "node scripts/release-seal.mjs",
+    "seal:archive": "node scripts/archive-seal.mjs",
     "validate:deployment": "bash scripts/validate-deployment.sh",
     "install:linux": "bash scripts/install-linux.sh",
     "rollback:linux": "bash scripts/rollback-linux.sh",
