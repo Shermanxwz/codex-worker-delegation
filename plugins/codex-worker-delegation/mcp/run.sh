@@ -10,8 +10,9 @@ fi
 
 # Codex desktop may launch plugin MCP servers with a minimal PATH. Prefer an
 # explicit override, then the deployment-pinned runtime, then ChatGPT-bundled
-# runtimes, and finally ordinary PATH lookup.
-data_home="${XDG_DATA_HOME:-${HOME:-}/.local/share}"
+# runtimes, and finally ordinary PATH lookup. The pinned runtime is anchored to
+# HOME so an inherited XDG_DATA_HOME from another identity cannot redirect it.
+data_home="${HOME:-}/.local/share"
 candidates=(
   "${CWD_NODE_PATH:-}"
   "${CODEX_NODE_PATH:-}"

@@ -3,6 +3,13 @@ const UNSUPPORTED_PATTERNS = [
   /not\s+found/i, /unsupported.*(endpoint|api|responses)/i, /unknown.*(endpoint|path)/i,
   /responses.*(not supported|unsupported|disabled)/i, /no route/i
 ];
+const FORBIDDEN_EXTRA_HEADERS = new Set([
+  'authorization', 'proxy-authorization', 'content-type', 'content-length', 'host',
+  'connection', 'keep-alive', 'transfer-encoding', 'te', 'trailer', 'upgrade',
+  'cookie', 'set-cookie'
+]);
+const MAX_EXTRA_HEADERS = 32;
+const MAX_EXTRA_HEADER_VALUE = 8192;
 
 export function endpoints(baseUrl) {
   const u = new URL(baseUrl);
@@ -40,8 +47,28 @@ const PROTOCOL_MISMATCH_PATTERNS = [
 ];
 export function shouldTryChatFallback(status, bodyText = '') { return unsupportedEndpoint(status, bodyText) || (status >= 500 && status < 504) || (status !== 401 && status !== 403 && PROTOCOL_MISMATCH_PATTERNS.some((pattern) => pattern.test(bodyText))); }
 
+export function sanitizeProviderHeaders(extraHeaders = {}) {
+  if (!extraHeaders || typeof extraHeaders !== 'object' || Array.isArray(extraHeaders)) return {};
+  const out = {};
+  let accepted = 0;
+  for (const [rawName, rawValue] of Object.entries(extraHeaders)) {
+    if (accepted >= MAX_EXTRA_HEADERS) break;
+    const name = String(rawName);
+    const lower = name.toLowerCase();
+    if (!/^[A-Za-z0-9-]{1,64}$/.test(name) || FORBIDDEN_EXTRA_HEADERS.has(lower)) continue;
+    if (typeof rawValue !== 'string' || rawValue.length > MAX_EXTRA_HEADER_VALUE || /[\0\r\n]/.test(rawValue)) continue;
+    out[name] = rawValue;
+    accepted += 1;
+  }
+  return out;
+}
+
 function authHeaders(apiKey, extraHeaders = {}) {
-  return { 'content-type': 'application/json', ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}), ...extraHeaders };
+  return {
+    ...sanitizeProviderHeaders(extraHeaders),
+    'content-type': 'application/json',
+    ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {})
+  };
 }
 
 export async function listProviderModels({ baseUrl, apiKey, timeoutMs = 10000, fetchImpl = fetch, extraHeaders = {} }) {

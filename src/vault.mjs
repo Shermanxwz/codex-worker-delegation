@@ -3,17 +3,42 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { vaultKeyPath } from './paths.mjs';
 
+async function readKey(file) {
+  const key = await fs.readFile(file);
+  if (key.length !== 32) throw new Error('vault key must be 32 bytes');
+  await fs.chmod(file, 0o600).catch(() => {});
+  return key;
+}
+
 async function loadOrCreateKey(file) {
   await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+  try { return await readKey(file); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+
+  const key = crypto.randomBytes(32);
+  const temporary = `${file}.${process.pid}.${crypto.randomBytes(8).toString('hex')}.keytmp`;
+  let handle;
   try {
-    const key = await fs.readFile(file);
-    if (key.length !== 32) throw new Error('vault key must be 32 bytes');
-    return key;
-  } catch (error) {
-    if (error.code !== 'ENOENT') throw error;
-    const key = crypto.randomBytes(32);
-    await fs.writeFile(file, key, { mode: 0o600, flag: 'wx' });
-    return key;
+    handle = await fs.open(temporary, 'wx', 0o600);
+    await handle.writeFile(key);
+    await handle.sync();
+    await handle.close();
+    handle = null;
+    await fs.chmod(temporary, 0o600).catch(() => {});
+    try {
+      // link(2) publishes a fully written inode atomically without replacing a
+      // key another process may have won first. This avoids exposing a zero- or
+      // partially-written final master.key during concurrent first startup.
+      await fs.link(temporary, file);
+      await fs.chmod(file, 0o600).catch(() => {});
+      return key;
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      return await readKey(file);
+    }
+  } finally {
+    if (handle) await handle.close().catch(() => {});
+    await fs.unlink(temporary).catch((error) => { if (error.code !== 'ENOENT') throw error; });
   }
 }
 

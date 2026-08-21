@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { endpoints, listProviderModels, probeProvider } from '../src/provider.mjs';
+import { endpoints, listProviderModels, probeProvider, providerHeaders, sanitizeProviderHeaders } from '../src/provider.mjs';
 
 async function listen(handler) {
   const server = http.createServer(handler);
@@ -17,6 +17,25 @@ test('normalizes root, /v1, and concrete endpoints', () => {
   assert.equal(new URL(endpoints('https://x.test/v1/chat/completions').models).pathname, '/v1/models');
   assert.throws(() => endpoints('ftp://x.test/v1'), /http or https/);
   assert.throws(() => endpoints('https://u:p@x.test/v1'), /credentials/);
+});
+
+test('provider extra headers cannot override authentication, framing, or content type', () => {
+  const filtered = sanitizeProviderHeaders({
+    Authorization: 'Bearer attacker',
+    'Content-Type': 'text/plain',
+    Host: 'evil.test',
+    'Content-Length': '999',
+    Connection: 'close',
+    Cookie: 'secret=1',
+    'X-API-Key': 'vendor-key',
+    'X-Trace': 'ok',
+    'X-Bad': 'line\r\ninjection'
+  });
+  assert.deepEqual(filtered, { 'X-API-Key': 'vendor-key', 'X-Trace': 'ok' });
+  const headers = providerHeaders({ headers: { Authorization: 'Bearer attacker', 'Content-Type': 'text/plain', 'X-API-Key': 'vendor-key' } }, 'real-key');
+  assert.equal(headers.authorization, 'Bearer real-key');
+  assert.equal(headers['content-type'], 'application/json');
+  assert.equal(headers['X-API-Key'], 'vendor-key');
 });
 
 test('reads and normalizes third-party /v1/models catalog', async (t) => {

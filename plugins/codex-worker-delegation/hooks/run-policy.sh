@@ -12,7 +12,9 @@ if [[ ! -f "$policy" ]]; then
   deny 'Codex Worker Delegation policy hook is missing; failing closed.'
 fi
 
-data_home="${XDG_DATA_HOME:-${HOME:-}/.local/share}"
+# The production deployment is deliberately identity-anchored to HOME. Do not
+# inherit an XDG_DATA_HOME that may belong to a different sudo/login context.
+data_home="${HOME:-}/.local/share"
 candidates=(
   "${CWD_NODE_PATH:-}"
   "${CODEX_NODE_PATH:-}"

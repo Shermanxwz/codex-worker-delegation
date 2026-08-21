@@ -11,3 +11,15 @@ test('publicState redacts ciphertext without mutating source and reports hasApiK
 
 test('gateway token creation is stable under concurrent first access',async(t)=>{const dir=await fs.mkdtemp(path.join(os.tmpdir(),'cwd-token-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));const store=new StateStore({env:{CWD_DATA_DIR:dir}});const tokens=await Promise.all(Array.from({length:20},()=>store.ensureGatewayToken()));assert.equal(new Set(tokens).size,1);assert.equal((await fs.readFile(path.join(dir,'gateway.token'),'utf8')).trim(),tokens[0]);
 });
+
+test('concurrent state mutations are serialized so independent updates cannot overwrite each other',async(t)=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'cwd-state-concurrency-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));
+  const store=new StateStore({env:{CWD_DATA_DIR:dir}});
+  await Promise.all([
+    store.update(async(state)=>{await new Promise((resolve)=>setTimeout(resolve,40));state.protocolCache.alpha={protocol:'responses'};return state;}),
+    store.update(async(state)=>{state.installed=true;return state;})
+  ]);
+  const final=await store.read();
+  assert.equal(final.installed,true);
+  assert.deepEqual(final.protocolCache.alpha,{protocol:'responses'});
+});

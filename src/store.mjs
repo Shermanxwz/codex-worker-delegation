@@ -101,7 +101,12 @@ export function setRoutingMode(state, mode, roles = {}) {
 }
 
 export class StateStore {
-  constructor({ env = process.env } = {}) { this.env = env; this.file = statePath(env); this.gatewayTokenPromise = null; }
+  constructor({ env = process.env } = {}) {
+    this.env = env;
+    this.file = statePath(env);
+    this.gatewayTokenPromise = null;
+    this.mutationTail = Promise.resolve();
+  }
 
   async read() {
     try { return normalizeState(JSON.parse(await fs.readFile(this.file, 'utf8'))); }
@@ -112,15 +117,28 @@ export class StateStore {
   }
 
   async write(next) {
-    const normalized = { ...normalizeState(next), updatedAt: new Date().toISOString() };
-    await atomicWrite(this.file, `${JSON.stringify(normalized, null, 2)}\n`);
-    return normalized;
+    return this.#enqueueMutation(() => this.#writeUnlocked(next));
   }
 
   async update(mutator) {
-    const current = await this.read();
-    const next = await mutator(structuredClone(current));
-    return this.write(next ?? current);
+    if (typeof mutator !== 'function') throw new TypeError('StateStore.update requires a mutator function');
+    return this.#enqueueMutation(async () => {
+      const current = await this.read();
+      const next = await mutator(structuredClone(current));
+      return this.#writeUnlocked(next ?? current);
+    });
+  }
+
+  #enqueueMutation(operation) {
+    const run = this.mutationTail.catch(() => {}).then(operation);
+    this.mutationTail = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
+  async #writeUnlocked(next) {
+    const normalized = { ...normalizeState(next), updatedAt: new Date().toISOString() };
+    await atomicWrite(this.file, `${JSON.stringify(normalized, null, 2)}\n`);
+    return normalized;
   }
 
   async ensureGatewayToken() {

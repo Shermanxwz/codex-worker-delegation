@@ -6,7 +6,10 @@ cwd_install_root() {
     echo "HOME must be an absolute path for Codex Worker Delegation deployment." >&2
     return 2
   fi
-  printf '%s\n' "${CWD_INSTALL_ROOT:-${XDG_DATA_HOME:-$home/.local/share}/codex-worker-delegation}"
+  # Deliberately anchor the default to HOME rather than ambient XDG variables.
+  # ChatGPT/Codex authentication is identity-scoped by HOME; a stale inherited
+  # XDG_DATA_HOME from another user must never redirect the production runtime.
+  printf '%s\n' "${CWD_INSTALL_ROOT:-$home/.local/share/codex-worker-delegation}"
 }
 
 cwd_scope_file() {
@@ -46,7 +49,9 @@ cwd_systemd_dir() {
   elif [[ "$scope" == 'system' ]]; then
     printf '/etc/systemd/system\n'
   else
-    printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+    # Same rationale as cwd_install_root: use the selected desktop identity's
+    # HOME, not a possibly inherited XDG_CONFIG_HOME belonging to another uid.
+    printf '%s\n' "$HOME/.config/systemd/user"
   fi
 }
 

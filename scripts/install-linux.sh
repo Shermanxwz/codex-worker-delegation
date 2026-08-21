@@ -34,8 +34,10 @@ if [[ -z "$CODEX" ]]; then echo "Official ChatGPT Linux bundled Codex/current Co
 CODEX_VERSION="$($CODEX --version 2>&1 | head -1)"
 
 printf 'Preflight: uid=%s home=%s node=%s codex=%s\n' "$EUID" "$HOME" "$($NODE_BIN --version)" "$CODEX_VERSION"
+# Installation validates static/package contracts. The full test suite belongs
+# to CI and seal:release; running timing-sensitive fake-runtime tests during a
+# production upgrade would make installation depend on target-machine load.
 (cd "$ROOT" && "$NODE_BIN" scripts/check.mjs)
-(cd "$ROOT" && "$NODE_BIN" --test test/*.test.mjs)
 
 INSTALL_ROOT="$(cwd_install_root)"
 SCOPE="$(cwd_systemd_scope "$INSTALL_ROOT")"
