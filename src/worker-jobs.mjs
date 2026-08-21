@@ -137,7 +137,14 @@ export class WorkerTaskManager {
   }
 
   async get(taskId) {
-    if (this.tasks.has(taskId)) return structuredClone(this.tasks.get(taskId));
+    if (this.tasks.has(taskId)) {
+      const task = this.tasks.get(taskId);
+      if (isTerminalTask(task)) {
+        const pendingWrite = this.writes.get(taskId);
+        if (pendingWrite) await pendingWrite;
+      }
+      return structuredClone(this.tasks.get(taskId));
+    }
     let raw;
     try { raw = JSON.parse(await fs.readFile(workerTaskPath(this.env, taskId), 'utf8')); }
     catch (error) {
