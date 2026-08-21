@@ -10,17 +10,20 @@ WorkingDirectory=%h/.local/share/codex-worker-delegation/current
 Environment=CWD_HOST=127.0.0.1
 Environment=CWD_PORT=8788
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=CWD_NODE_BIN=%h/.local/share/codex-worker-delegation/runtime/node
 ExecStart=%h/.local/share/codex-worker-delegation/current/scripts/service-entry.sh
 Restart=on-failure
 RestartSec=2
 TimeoutStopSec=20
 UMask=0077
 
-# User-service hardening. The service intentionally keeps the user's home
-# reachable because Codex must access ~/.codex and delegated workspace paths.
+# Harden the control plane without making delegated workspaces read-only.
+# ProtectSystem=strict is intentionally NOT used: this service launches Codex
+# App Server workers that must retain the signed-in desktop user's normal
+# write access to explicitly selected workspaces under $HOME.
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=strict
+ProtectSystem=full
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectKernelLogs=true
