@@ -125,6 +125,8 @@ After installing or refreshing the plugin, start a **new Codex chat/task**. Code
 
 `WORKER` is not a label-only switch. In a loaded and trusted session, it is `DELEGATE` internally: the root is coordination-only, direct Bash/file-edit/local-function calls are denied by `PreToolUse`, and third-party work must return a real `delegate_worker` result with `execution`, `provider`, `model`, `threadId`, and `status`. A Web-panel state or a marker-only route check is not sufficient proof of Worker execution.
 
+The gateway preserves assistant turns that contain multiple parallel function calls as one Chat Completions `tool_calls` message. A failed provider turn is recorded as `worker.failed` and returned as an error; it is never reported as a completed Worker task.
+
 ## Security boundary
 
 - New API keys are encrypted with AES-256-GCM in the project data directory.
