@@ -29,8 +29,9 @@ NODE_MAJOR="$($NODE_BIN -p 'Number(process.versions.node.split(".")[0])')"
 if [[ ! "$NODE_MAJOR" =~ ^[0-9]+$ ]] || (( NODE_MAJOR < 20 )); then echo "Node.js 20+ is required (found $($NODE_BIN --version))" >&2; exit 2; fi
 CODEX="$(find_codex || true)"
 if [[ -z "$CODEX" ]]; then echo "Official ChatGPT Linux bundled Codex/current Codex was not found" >&2; exit 2; fi
+CODEX_VERSION="$($CODEX --version 2>&1 | head -1)"
 
-printf 'Preflight: %s / %s\n' "$($NODE_BIN --version)" "$($CODEX --version 2>&1 | head -1)"
+printf 'Preflight: %s / %s\n' "$($NODE_BIN --version)" "$CODEX_VERSION"
 (cd "$ROOT" && "$NODE_BIN" scripts/check.mjs)
 (cd "$ROOT" && "$NODE_BIN" --test test/*.test.mjs)
 
@@ -126,10 +127,13 @@ if [[ "$AUTH_BEFORE" != "$AUTH_AFTER" ]]; then
   echo "FATAL: ChatGPT/Codex auth.json changed during installation; refusing seal." >&2
   exit 1
 fi
+INSTALL_RECORD="$INSTALL_ROOT/install-record.json"
+"$NODE_BIN" -e 'const fs=require("fs");const [file,releaseId,authSha256,codexVersion,nodeVersion]=process.argv.slice(1);fs.writeFileSync(file,JSON.stringify({schemaVersion:1,releaseId,installedAt:new Date().toISOString(),authSha256,codexVersion,nodeVersion},null,2)+"\n",{mode:0o600});fs.chmodSync(file,0o600)' "$INSTALL_RECORD" "$RELEASE_ID" "$AUTH_AFTER" "$CODEX_VERSION" "$($NODE_BIN --version)"
 trap - ERR
 
 printf 'Installed release: %s\n' "$RELEASE_ID"
 printf 'Current tree: %s\n' "$CURRENT"
 [[ -f "$PREVIOUS/.release-id" ]] && printf 'Rollback target: %s\n' "$(cat "$PREVIOUS/.release-id")"
 printf 'ChatGPT auth.json preservation: PASS (%s)\n' "$AUTH_AFTER"
+printf 'Install record: %s\n' "$INSTALL_RECORD"
 printf 'Run the Web control plane to configure New API, then execute: npm run seal:release\n'
