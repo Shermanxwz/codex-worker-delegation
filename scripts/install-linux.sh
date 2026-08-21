@@ -83,6 +83,7 @@ rollback_on_error() {
     rm -rf "$CURRENT.failed"
     [[ -d "$CURRENT" ]] && mv "$CURRENT" "$CURRENT.failed" || true
     if (( HAD_CURRENT == 1 )) && [[ -d "$PREVIOUS" ]]; then mv "$PREVIOUS" "$CURRENT" || true; fi
+    if [[ -d "$CURRENT" ]]; then CWD_RELEASE_ROOT="$CURRENT" CWD_NODE_BIN="$NODE_BIN" bash "$CURRENT/scripts/install-service-unit.sh" >/dev/null 2>&1 || true; fi
     if [[ "${CWD_INSTALL_NO_SYSTEMD:-0}" != "1" ]]; then
       systemctl --user daemon-reload >/dev/null 2>&1 || true
       systemctl --user restart codex-worker-delegation.service >/dev/null 2>&1 || true
@@ -95,7 +96,7 @@ rollback_on_error() {
 }
 trap rollback_on_error ERR
 
-install -m 600 "$CURRENT/deploy/codex-worker-delegation.service" "$SERVICE_FILE"
+CWD_RELEASE_ROOT="$CURRENT" CWD_NODE_BIN="$NODE_BIN" bash "$CURRENT/scripts/install-service-unit.sh"
 
 AUTH_FILE="${CODEX_HOME:-$HOME/.codex}/auth.json"
 auth_hash() { if [[ -f "$AUTH_FILE" ]]; then sha256sum "$AUTH_FILE" | awk '{print $1}'; else printf 'absent\n'; fi; }
