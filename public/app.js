@@ -185,8 +185,10 @@ function renderModelTests() {
 function renderIntegration() {
   const official = catalog.official?.models || []; const third = catalog.thirdParty?.models || [];
   const officialIds = new Set(official.map((model) => model.model || model.id)); const overlap = third.map((model) => model.id).filter((id) => officialIds.has(id));
+  const newApiOnly = third.map((model) => model.id).filter((id) => !officialIds.has(id));
+  const pickerThirdParty = newApiOnly.filter((id) => officialIds.has(id));
   $('integrationState').textContent = state?.installed ? 'namespaced provider 已安装；官方 top-level provider/model 保持不变。' : '尚未安装 namespaced Codex provider。';
-  $('nativeVisibility').textContent = `官方 openai model/list：${official.length} 个；New API /v1/models：${third.length} 个；直接重名：${overlap.length} 个。两者可以由本控制面同时路由；原生 Codex 的第三方 provider 目录使用独立格式，但官方 openai 下拉框不会自动合并第三方 ID。`;
+  $('nativeVisibility').textContent = `实测官方 Codex model/list：${official.length} 个；New API /v1/models：${third.length} 个；New API 独有 ID：${newApiOnly.length} 个；官方列表实际包含这些独有 ID：${pickerThirdParty.length} 个；同名模型：${overlap.length} 个。当前第三方线程可以真实运行，但官方 openai 下拉框没有 provider 绑定，不能把第三方 ID 合法地自动合并后再保证选中时走 New API。`;
 }
 
 function renderStatus() {

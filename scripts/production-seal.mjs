@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { createApp } from '../src/server.mjs';
-import { codexBinaryCandidates, resolveCodexBinary } from '../src/app-server.mjs';
+import { codexBinaryCandidates, resolveCodexBinary, withCodexAppServer } from '../src/app-server.mjs';
 import { CodexConfigManager, inspectTopLevel, sameTopLevelSelectors } from '../src/codex-config.mjs';
 import { activeRouting, StateStore } from '../src/store.mjs';
 import { codexHome } from '../src/paths.mjs';
@@ -140,16 +140,36 @@ async function run() {
     if (catalog?.official?.ok !== true || officialAccountType !== 'chatgpt') throw new Error('official ChatGPT account proof failed');
     if (catalog?.thirdParty?.ok !== true || !catalog.thirdParty.models?.length) throw new Error('third-party model discovery failed');
 
+    const nativePickerModels = await withCodexAppServer((client) => client.listModels({ includeHidden: true }), { env });
+    const nativePickerIds = new Set(nativePickerModels.map((model) => model?.model || model?.id).filter(Boolean));
+    const discoveredThirdPartyIds = [...new Set(catalog.thirdParty.models.map((model) => model?.id).filter(Boolean))];
+    const currentOfficialIds = new Set(catalog.official.models.map((model) => model?.model || model?.id).filter(Boolean));
+    const thirdPartyOnlyIds = discoveredThirdPartyIds.filter((model) => !currentOfficialIds.has(model));
+    const pickerThirdPartyIds = thirdPartyOnlyIds.filter((model) => nativePickerIds.has(model));
+    record('official Codex model picker includes discovered New API-only models', pickerThirdPartyIds.length === thirdPartyOnlyIds.length && thirdPartyOnlyIds.length > 0, {
+      officialPickerCount: nativePickerModels.length,
+      thirdPartyCatalogCount: discoveredThirdPartyIds.length,
+      thirdPartyOnlyCount: thirdPartyOnlyIds.length,
+      thirdPartyIdsInOfficialPicker: pickerThirdPartyIds
+    });
+
     const connectivity = await requestJson(base, env, '/api/provider/connectivity', 'POST', {});
     const connectivityResults = Array.isArray(connectivity?.results) ? connectivity.results : [];
     const connectivityPassed = connectivityResults.filter((result) => result.ok === true);
-    record('third-party model connectivity matrix executed', connectivityResults.length === catalog.thirdParty.models.length && connectivityPassed.length > 0, {
+    const connectivityComplete = connectivityResults.length === catalog.thirdParty.models.length;
+    const allModelsPassed = connectivityComplete && connectivityPassed.length === connectivityResults.length;
+    record('third-party model connectivity matrix executed', connectivityComplete, {
       tested: connectivityResults.length,
       catalog: catalog.thirdParty.models.length,
       passed: connectivityPassed.length,
       failed: connectivityResults.filter((result) => !result.ok).map((result) => ({ model: result.model, protocol: result.protocol, status: result.status, error: result.error }))
     });
-    if (!connectivityPassed.length) throw new Error('no third-party chat model passed connectivity');
+    record('all discovered New API models are Codex-routeable', allModelsPassed, {
+      tested: connectivityResults.length,
+      passed: connectivityPassed.length,
+      failed: connectivityResults.length - connectivityPassed.length
+    });
+    if (!connectivityResults.length) throw new Error('third-party connectivity matrix returned no results');
 
     const state = await store.read();
     const routeCandidates = [];
