@@ -37,6 +37,7 @@ export function normalizeWorkerMaxTotalTimeout(value, initialTimeoutMs = WORKER_
 function reviewLeadMs(timeoutMs) { return Math.min(WORKER_REVIEW_LEAD_MS, Math.max(1000, Math.floor(timeoutMs / 2))); }
 function durationLabel(ms) { if (ms >= 60000) return `${Math.round(ms / 60000)} 分钟`; return `${Math.max(1, Math.round(ms / 1000))} 秒`; }
 export function isTerminalTask(task) { return TERMINAL_TASK_STATES.has(task?.status); }
+function isCancellationRequested(task) { return Boolean(task?.cancelRequestedAt); }
 export function isWorkerTimeout(error) { return error?.code === 'CODEX_TURN_TIMEOUT' || error?.code === 'CODEX_REQUEST_TIMEOUT' || error?.code === 'WORKER_TIMEOUT' || /timed out|timeout|deadline exceeded/i.test(String(error?.message || error)); }
 export function errorDetails(error) { if (!error) return null; return { name: error.name || 'Error', code: error.code || null, message: error.message || String(error), method: error.method || null, data: error.data === undefined ? null : error.data }; }
 
@@ -85,7 +86,7 @@ export class WorkerTaskManager {
     this.tasks.set(task.taskId, task);
     const hasControlState = await fs.access(statePath(this.env)).then(() => true).catch(() => false); if (hasControlState) this.modeGuardedTasks.add(task.taskId);
     await this.#queueWrite(task);
-    const run = this.#run(task.taskId, runner).catch(async (error) => { const completedAt = this.now(); await this.#update(task.taskId, { status: isWorkerTimeout(error) ? 'timed_out' : 'failed', phase: isWorkerTimeout(error) ? 'timeout' : 'failed', message: error.message || 'Worker task failed before execution started', completedAt: iso(completedAt), error: errorDetails(error) }, { type: 'worker.manager_failed', message: error.message || 'Worker task failed before execution started' }).catch(() => {}); });
+    const run = this.#run(task.taskId, runner).catch(async (error) => { const current = this.tasks.get(task.taskId); if (isTerminalTask(current) || isCancellationRequested(current)) return; const completedAt = this.now(); await this.#update(task.taskId, { status: isWorkerTimeout(error) ? 'timed_out' : 'failed', phase: isWorkerTimeout(error) ? 'timeout' : 'failed', message: error.message || 'Worker task failed before execution started', completedAt: iso(completedAt), error: errorDetails(error) }, { type: 'worker.manager_failed', message: error.message || 'Worker task failed before execution started' }).catch(() => {}); });
     let tracked; tracked = run.finally(() => { if (this.runs.get(task.taskId) === tracked) this.runs.delete(task.taskId); }); this.runs.set(task.taskId, tracked); void tracked.catch(() => {});
     return structuredClone(task);
   }
@@ -101,21 +102,20 @@ export class WorkerTaskManager {
 
   async cancel(taskId, reason = 'cancelled by caller') {
     const task = await this.get(taskId); if (!task || isTerminalTask(task)) return task;
-    const normalizedReason = String(reason || 'cancelled by caller').trim().slice(0, 500) || 'cancelled by caller';
-    const now = this.now(); const cancelRequestedAt = iso(now);
-    // If the runner already registered its App Server/process canceller, invoke
-    // it before publishing a terminal task. This prevents status readers from
-    // observing "cancelled" while the delegated process has not yet received
-    // its stop signal. Startup races remain covered by #registerCancel, which
-    // notices cancelRequestedAt and immediately invokes a late registrant.
-    const canceler = this.cancelers.get(taskId);
-    if (canceler) {
+    const normalizedReason = String(reason || task.cancelReason || 'cancelled by caller').trim().slice(0, 500) || 'cancelled by caller';
+    const cancelRequestedAt = task.cancelRequestedAt || iso(this.now());
+    // Cancellation intent is authoritative before the App Server/process stop
+    // signal is delivered. The runner checks this marker before publishing
+    // completed/failed, so a stop-induced exit can never race cancellation
+    // into a false failure or successful completion.
+    if (!task.cancelRequestedAt) {
       await this.#update(taskId, { phase: 'cancelling', message: `正在取消 Worker：${normalizedReason}`, cancelRequestedAt, cancelReason: normalizedReason }, { type: 'worker.cancel_requested', message: `正在取消 Worker：${normalizedReason}` });
-      await invokeWithin(canceler, normalizedReason);
     }
+    const canceler = this.cancelers.get(taskId);
+    if (canceler) await invokeWithin(canceler, normalizedReason);
     const current = this.tasks.get(taskId); if (!current || isTerminalTask(current)) return this.get(taskId);
     const completedAt = iso(this.now());
-    await this.#update(taskId, { status: 'cancelled', phase: 'cancelled', message: `Worker 已取消：${normalizedReason}`, completedAt, cancelledAt: completedAt, cancelRequestedAt: current.cancelRequestedAt || cancelRequestedAt, cancelReason: normalizedReason, durationMs: current.startedAt ? Math.max(0, this.now() - Date.parse(current.startedAt)) : null, error: { name: 'WorkerCancelledError', code: 'WORKER_CANCELLED', message: normalizedReason, method: null, data: null } }, { type: 'worker.cancelled', message: `Worker 已取消：${normalizedReason}` });
+    await this.#update(taskId, { status: 'cancelled', phase: 'cancelled', message: `Worker 已取消：${normalizedReason}`, completedAt, cancelledAt: completedAt, cancelRequestedAt, cancelReason: current.cancelReason || normalizedReason, durationMs: current.startedAt ? Math.max(0, this.now() - Date.parse(current.startedAt)) : null, error: { name: 'WorkerCancelledError', code: 'WORKER_CANCELLED', message: current.cancelReason || normalizedReason, method: null, data: null } }, { type: 'worker.cancelled', message: `Worker 已取消：${current.cancelReason || normalizedReason}` });
     return this.get(taskId);
   }
 
@@ -146,8 +146,8 @@ export class WorkerTaskManager {
     if (!started || isTerminalTask(started)) return;
     this.#scheduleReview(taskId, Date.parse(started.reviewAt)); const heartbeat = setInterval(() => { void this.#update(taskId, { lastHeartbeatAt: iso(this.now()), message: 'Worker 仍在运行，等待下一阶段结果' }).catch(() => {}); }, this.heartbeatMs); this.timers.set(taskId, heartbeat);
     if (this.modeGuardedTasks.has(taskId)) { const modeTimer = setInterval(() => { void this.#enforceControlMode(taskId).catch(() => {}); }, this.modeGuardMs); this.modeTimers.set(taskId, modeTimer); }
-    try { const result = await runner({ taskId, report: (patch = {}) => this.#update(taskId, { ...patch, lastHeartbeatAt: iso(this.now()) }, patch.event || null), heartbeat: () => this.#update(taskId, { lastHeartbeatAt: iso(this.now()) }), registerCancel: (handler) => this.#registerCancel(taskId, handler), registerExtend: (handler) => this.#registerExtend(taskId, handler) }); if (isTerminalTask(this.tasks.get(taskId))) return; const completedAt = this.now(); await this.#update(taskId, { status: 'completed', phase: 'completed', progress: 100, message: 'Worker 已完成并返回结果', completedAt: iso(completedAt), durationMs: Math.max(0, completedAt - startedAt), threadId: result?.threadId || this.tasks.get(taskId)?.threadId || null, turnId: result?.turn?.id || this.tasks.get(taskId)?.turnId || null, output: result?.output || '', messages: Array.isArray(result?.messages) ? result.messages : [], result }, { type: 'worker.completed', message: 'Worker 已完成' }); }
-    catch (error) { if (isTerminalTask(this.tasks.get(taskId))) return; const completedAt = this.now(); const timedOut = isWorkerTimeout(error); await this.#update(taskId, { status: timedOut ? 'timed_out' : 'failed', phase: timedOut ? 'timeout' : 'failed', progress: Math.min(this.tasks.get(taskId)?.progress || 0, 95), message: timedOut ? 'Worker 超时；任务未返回完成事件' : 'Worker 执行失败', completedAt: iso(completedAt), durationMs: Math.max(0, completedAt - startedAt), error: errorDetails(error) }, { type: timedOut ? 'worker.timeout' : 'worker.failed', message: timedOut ? 'Worker 超时' : 'Worker 执行失败' }); }
+    try { const result = await runner({ taskId, report: (patch = {}) => this.#update(taskId, { ...patch, lastHeartbeatAt: iso(this.now()) }, patch.event || null), heartbeat: () => this.#update(taskId, { lastHeartbeatAt: iso(this.now()) }), registerCancel: (handler) => this.#registerCancel(taskId, handler), registerExtend: (handler) => this.#registerExtend(taskId, handler) }); const current = this.tasks.get(taskId); if (isTerminalTask(current) || isCancellationRequested(current)) return; const completedAt = this.now(); await this.#update(taskId, { status: 'completed', phase: 'completed', progress: 100, message: 'Worker 已完成并返回结果', completedAt: iso(completedAt), durationMs: Math.max(0, completedAt - startedAt), threadId: result?.threadId || current?.threadId || null, turnId: result?.turn?.id || current?.turnId || null, output: result?.output || '', messages: Array.isArray(result?.messages) ? result.messages : [], result }, { type: 'worker.completed', message: 'Worker 已完成' }); }
+    catch (error) { const current = this.tasks.get(taskId); if (isTerminalTask(current) || isCancellationRequested(current)) return; const completedAt = this.now(); const timedOut = isWorkerTimeout(error); await this.#update(taskId, { status: timedOut ? 'timed_out' : 'failed', phase: timedOut ? 'timeout' : 'failed', progress: Math.min(current?.progress || 0, 95), message: timedOut ? 'Worker 超时；任务未返回完成事件' : 'Worker 执行失败', completedAt: iso(completedAt), durationMs: Math.max(0, completedAt - startedAt), error: errorDetails(error) }, { type: timedOut ? 'worker.timeout' : 'worker.failed', message: timedOut ? 'Worker 超时' : 'Worker 执行失败' }); }
     finally { clearInterval(heartbeat); this.timers.delete(taskId); const modeTimer = this.modeTimers.get(taskId); if (modeTimer) clearInterval(modeTimer); this.modeTimers.delete(taskId); this.modeGuardedTasks.delete(taskId); const reviewTimer = this.reviewTimers.get(taskId); if (reviewTimer) clearTimeout(reviewTimer); this.reviewTimers.delete(taskId); this.extenders.delete(taskId); }
   }
 
