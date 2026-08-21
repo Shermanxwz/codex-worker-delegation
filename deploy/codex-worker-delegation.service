@@ -1,0 +1,20 @@
+[Unit]
+Description=Codex Worker Delegation local control plane
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/Documents/Codex/2026-08-21/referenced-chatgpt-conversation-this-is-an/work/codex-worker-delegation
+Environment=HOME=/root
+Environment=CWD_HOST=127.0.0.1
+Environment=CWD_PORT=8788
+Environment=PATH=/root/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/root/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node /root/Documents/Codex/2026-08-21/referenced-chatgpt-conversation-this-is-an/work/codex-worker-delegation/src/server.mjs
+Restart=on-failure
+RestartSec=2
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

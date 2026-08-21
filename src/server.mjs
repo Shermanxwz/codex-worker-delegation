@@ -41,6 +41,7 @@ export function createApp({ env = process.env, fetchImpl = fetch } = {}) {
       if (req.method === 'POST' && url.pathname === '/api/auth/setup') {
         if (!isLoopback(host) && (!env.CWD_WEB_TOKEN || req.headers.authorization !== `Bearer ${env.CWD_WEB_TOKEN}`)) return sendJson(res, 401, { error: 'bootstrap token required for public password setup' });
         const body = await readJson(req);
+        if (body.password !== body.confirmPassword) return sendJson(res, 400, { error: 'password confirmation does not match' });
         await webAuth.setPassword(body.password);
         const session = await webAuth.login(body.password, req.socket.remoteAddress || 'unknown');
         return sendJson(res, 200, { ok: true, configured: true }, { 'set-cookie': webAuth.cookie(session, secureCookie(env, host)) });
