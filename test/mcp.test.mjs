@@ -18,65 +18,22 @@ async function writeToken(dir){await fs.writeFile(path.join(dir,'gateway.token')
  test('bundled MCP server initializes, lists all tools and returns only redacted status',async(t)=>{
   const dir=await tempDir(t);await writeState(dir);
   const m=startMcp(t,{CWD_DATA_DIR:dir});
-  m.send({jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-06-18'}});
-  m.send({jsonrpc:'2.0',id:2,method:'tools/list',params:{}});
-  m.send({jsonrpc:'2.0',id:3,method:'tools/call',params:{name:'delegation_status',arguments:{}}});
-  assert.equal((await m.wait(1)).result.serverInfo.name,'codex-worker-delegation');
-  const tools=(await m.wait(2)).result.tools.map(x=>x.name);
-  assert.deepEqual(tools,['delegation_status','delegate_worker','worker_status','worker_extend','worker_cancel']);
-  const text=(await m.wait(3)).result.content[0].text;
-  assert.match(text,/DELEGATE/);assert.match(text,/third_party/);assert.doesNotMatch(text,/SECRET/);
+  m.send({jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-06-18'}});m.send({jsonrpc:'2.0',id:2,method:'tools/list',params:{}});m.send({jsonrpc:'2.0',id:3,method:'tools/call',params:{name:'delegation_status',arguments:{}}});
+  assert.equal((await m.wait(1)).result.serverInfo.name,'codex-worker-delegation');const tools=(await m.wait(2)).result.tools.map(x=>x.name);assert.deepEqual(tools,['delegation_status','delegate_worker','worker_status','worker_extend','worker_cancel']);const text=(await m.wait(3)).result.content[0].text;assert.match(text,/DELEGATE/);assert.match(text,/third_party/);assert.doesNotMatch(text,/SECRET/);
 });
 
 test('delegation_status fails closed instead of fabricating AUTO when state is unavailable',async(t)=>{const dir=await tempDir(t);const m=startMcp(t,{CWD_DATA_DIR:dir});m.send({jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-06-18'}});await m.wait(1);m.send({jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'delegation_status',arguments:{}}});const result=await m.wait(2);assert.match(result.error.message,/state is unavailable/i)});
 
 test('delegate_worker starts a token-authenticated task and returns its completed worker result',async(t)=>{
-  const dir=await tempDir(t);await writeToken(dir);await writeState(dir);
-  let seen=null;
+  const dir=await tempDir(t);await writeToken(dir);await writeState(dir);let seen=null;
   const control=http.createServer(async(req,res)=>{let body='';for await(const c of req)body+=c;seen={url:req.url,authorization:req.headers.authorization,body:JSON.parse(body)};res.writeHead(202,{'content-type':'application/json'});res.end(JSON.stringify({taskId:'wrk_testtask',status:'completed',execution:'cross_provider_thread',threadId:'thread-x',output:'WORKER_OK',result:{execution:'cross_provider_thread',threadId:'thread-x',output:'WORKER_OK'}}))});
-  const port=await listen(control);t.after(()=>control.close());
-  const m=startMcp(t,{CWD_DATA_DIR:dir,CWD_PORT:String(port)});
-  m.send({jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-06-18'}});await m.wait(1);
-  m.send({jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'delegate_worker',arguments:{task:'implement it',role:'worker',mode:'DELEGATE',cwd:'/tmp/project'}}});
-  const result=await m.wait(2);const payload=JSON.parse(result.result.content[0].text);
-  assert.equal(payload.execution,'cross_provider_thread');assert.equal(payload.output,'WORKER_OK');
-  assert.equal(seen.url,'/internal/worker/start');assert.equal(seen.authorization,`Bearer ${token}`);assert.deepEqual(seen.body,{task:'implement it',role:'worker',mode:'DELEGATE',cwd:'/tmp/project'});
+  const port=await listen(control);t.after(()=>control.close());const m=startMcp(t,{CWD_DATA_DIR:dir,CWD_PORT:String(port)});m.send({jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-06-18'}});await m.wait(1);m.send({jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'delegate_worker',arguments:{task:'implement it',role:'worker',mode:'DELEGATE',cwd:'/tmp/project'}}});const result=await m.wait(2);const payload=JSON.parse(result.result.content[0].text);assert.equal(payload.execution,'cross_provider_thread');assert.equal(payload.output,'WORKER_OK');assert.equal(seen.url,'/internal/worker/start');assert.equal(seen.authorization,`Bearer ${token}`);assert.deepEqual(seen.body,{task:'implement it',role:'worker',mode:'DELEGATE',cwd:'/tmp/project'});
 });
 
-test('delegate_worker is hard-blocked by the active MAIN lock before making a request',async(t)=>{
-  const dir=await tempDir(t);await writeToken(dir);await writeState(dir,'MAIN');
-  let requests=0;
-  const control=http.createServer(async(req,res)=>{requests+=1;res.writeHead(500);res.end('should not be called')});
-  const port=await listen(control);t.after(()=>control.close());
-  const m=startMcp(t,{CWD_DATA_DIR:dir,CWD_PORT:String(port)});
-  m.send({jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-06-18'}});await m.wait(1);
-  m.send({jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'delegate_worker',arguments:{task:'must not run',role:'worker'}}});
-  const result=await m.wait(2);assert.match(result.error.message,/MAIN mode disables/);assert.equal(requests,0);
-});
+test('delegate_worker whitelists its privileged HTTP payload instead of trusting undeclared MCP arguments',async(t)=>{const dir=await tempDir(t);await writeToken(dir);await writeState(dir);let seen=null;const control=http.createServer(async(req,res)=>{let raw='';for await(const c of req)raw+=c;seen=JSON.parse(raw);res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({status:'delegation_required',taskId:null}))});const port=await listen(control);t.after(()=>control.close());const m=startMcp(t,{CWD_DATA_DIR:dir,CWD_PORT:String(port)});m.send({jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-06-18'}});await m.wait(1);m.send({jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'delegate_worker',arguments:{task:'bounded',role:'worker',sandbox:'danger-full-access',waitForCompletion:true,evil:'smuggled'}}});await m.wait(2);assert.deepEqual(seen,{task:'bounded',role:'worker'})});
 
-test('worker_cancel forwards the authenticated task cancellation request',async(t)=>{
-  const dir=await tempDir(t);await writeToken(dir);await writeState(dir);
-  let seen=null;
-  const control=http.createServer(async(req,res)=>{let body='';for await(const c of req)body+=c;seen={url:req.url,authorization:req.headers.authorization,body:JSON.parse(body)};res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({taskId:'wrk_testtask',status:'cancelled',error:{code:'WORKER_CANCELLED',message:'operator stop'}}))});
-  const port=await listen(control);t.after(()=>control.close());
-  const m=startMcp(t,{CWD_DATA_DIR:dir,CWD_PORT:String(port)});
-  m.send({jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-06-18'}});await m.wait(1);
-  m.send({jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'worker_cancel',arguments:{taskId:'wrk_testtask',reason:'stop now'}}});
-  const result=await m.wait(2);const payload=JSON.parse(result.result.content[0].text);
-  assert.equal(payload.status,'cancelled');assert.equal(seen.url,'/internal/worker/cancel/wrk_testtask');assert.equal(seen.authorization,`Bearer ${token}`);assert.deepEqual(seen.body,{reason:'stop now'});
-});
+test('delegate_worker is hard-blocked by the active MAIN lock before making a request',async(t)=>{const dir=await tempDir(t);await writeToken(dir);await writeState(dir,'MAIN');let requests=0;const control=http.createServer(async(req,res)=>{requests+=1;res.writeHead(500);res.end('should not be called')});const port=await listen(control);t.after(()=>control.close());const m=startMcp(t,{CWD_DATA_DIR:dir,CWD_PORT:String(port)});m.send({jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-06-18'}});await m.wait(1);m.send({jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'delegate_worker',arguments:{task:'must not run',role:'worker'}}});const result=await m.wait(2);assert.match(result.error.message,/MAIN mode disables/);assert.equal(requests,0)});
 
-test('worker_extend forwards in DELEGATE and is locally blocked in MAIN',async(t)=>{
-  const dir=await tempDir(t);await writeToken(dir);await writeState(dir);
-  let seen=null;
-  const control=http.createServer(async(req,res)=>{let body='';for await(const c of req)body+=c;seen={url:req.url,authorization:req.headers.authorization,body:JSON.parse(body)};res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({taskId:'wrk_testtask',status:'running',reviewDue:false,extensionCount:1,deadlineAt:'2026-08-21T00:15:00.000Z'}))});
-  const port=await listen(control);t.after(()=>control.close());
-  const m=startMcp(t,{CWD_DATA_DIR:dir,CWD_PORT:String(port)});
-  m.send({jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-06-18'}});await m.wait(1);
-  m.send({jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'worker_extend',arguments:{taskId:'wrk_testtask',extraMs:900000,reason:'progress is on scope'}}});
-  const result=await m.wait(2);const payload=JSON.parse(result.result.content[0].text);
-  assert.equal(payload.extensionCount,1);assert.equal(seen.url,'/internal/worker/extend/wrk_testtask');assert.equal(seen.authorization,`Bearer ${token}`);assert.deepEqual(seen.body,{extraMs:900000,reason:'progress is on scope'});
-  await writeState(dir,'MAIN');
-  m.send({jsonrpc:'2.0',id:3,method:'tools/call',params:{name:'worker_extend',arguments:{taskId:'wrk_testtask',extraMs:1000}}});
-  assert.match((await m.wait(3)).error.message,/MAIN mode disables Worker lease extension/);
-});
+test('worker_cancel forwards the authenticated task cancellation request',async(t)=>{const dir=await tempDir(t);await writeToken(dir);await writeState(dir);let seen=null;const control=http.createServer(async(req,res)=>{let body='';for await(const c of req)body+=c;seen={url:req.url,authorization:req.headers.authorization,body:JSON.parse(body)};res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({taskId:'wrk_testtask',status:'cancelled',error:{code:'WORKER_CANCELLED',message:'operator stop'}}))});const port=await listen(control);t.after(()=>control.close());const m=startMcp(t,{CWD_DATA_DIR:dir,CWD_PORT:String(port)});m.send({jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-06-18'}});await m.wait(1);m.send({jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'worker_cancel',arguments:{taskId:'wrk_testtask',reason:'stop now'}}});const result=await m.wait(2);const payload=JSON.parse(result.result.content[0].text);assert.equal(payload.status,'cancelled');assert.equal(seen.url,'/internal/worker/cancel/wrk_testtask');assert.equal(seen.authorization,`Bearer ${token}`);assert.deepEqual(seen.body,{reason:'stop now'})});
+
+test('worker_extend forwards in DELEGATE and is locally blocked in MAIN',async(t)=>{const dir=await tempDir(t);await writeToken(dir);await writeState(dir);let seen=null;const control=http.createServer(async(req,res)=>{let body='';for await(const c of req)body+=c;seen={url:req.url,authorization:req.headers.authorization,body:JSON.parse(body)};res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({taskId:'wrk_testtask',status:'running',reviewDue:false,extensionCount:1,deadlineAt:'2026-08-21T00:15:00.000Z'}))});const port=await listen(control);t.after(()=>control.close());const m=startMcp(t,{CWD_DATA_DIR:dir,CWD_PORT:String(port)});m.send({jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-06-18'}});await m.wait(1);m.send({jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'worker_extend',arguments:{taskId:'wrk_testtask',extraMs:900000,reason:'progress is on scope'}}});const result=await m.wait(2);const payload=JSON.parse(result.result.content[0].text);assert.equal(payload.extensionCount,1);assert.equal(seen.url,'/internal/worker/extend/wrk_testtask');assert.equal(seen.authorization,`Bearer ${token}`);assert.deepEqual(seen.body,{extraMs:900000,reason:'progress is on scope'});await writeState(dir,'MAIN');m.send({jsonrpc:'2.0',id:3,method:'tools/call',params:{name:'worker_extend',arguments:{taskId:'wrk_testtask',extraMs:1000}}});assert.match((await m.wait(3)).error.message,/MAIN mode disables Worker lease extension/)});

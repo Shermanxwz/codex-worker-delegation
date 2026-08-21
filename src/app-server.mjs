@@ -6,6 +6,7 @@ import { spawn, spawnSync } from 'node:child_process';
 const DEFAULT_TIMEOUT_MS = 15000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 2000;
 const MAX_MODEL_PAGES = 100;
+const MAX_STDOUT_BUFFER_BYTES = 4 * 1024 * 1024;
 const REASONING_EFFORTS = new Set(['auto', 'none', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
 const SANDBOX_ALIASES = new Map([
   ['read-only', 'read-only'], ['readonly', 'read-only'], ['readOnly', 'read-only'],
@@ -52,23 +53,29 @@ export function resolveCodexBinary(env = process.env) {
 export class CodexAppServerClient {
   constructor({ env = process.env, binary = resolveCodexBinary(env), timeoutMs = DEFAULT_TIMEOUT_MS, shutdownTimeoutMs = DEFAULT_SHUTDOWN_TIMEOUT_MS } = {}) {
     this.env = env; this.binary = binary; this.timeoutMs = timeoutMs; this.shutdownTimeoutMs = Math.max(100, Number(shutdownTimeoutMs) || DEFAULT_SHUTDOWN_TIMEOUT_MS);
-    this.nextId = 1; this.pending = new Map(); this.notificationWaiters = []; this.pendingTurnExtensionMs = 0; this.notificationListeners = new Set(); this.stderr = ''; this.buffer = ''; this.process = null; this.closing = false;
+    this.nextId = 1; this.pending = new Map(); this.notificationWaiters = []; this.pendingTurnExtensionMs = 0; this.notificationListeners = new Set(); this.stderr = ''; this.buffer = ''; this.process = null;
   }
 
   async start() {
     if (this.process) return this;
     const child = spawn(this.binary, ['app-server', '--stdio'], { env: this.env, stdio: ['pipe', 'pipe', 'pipe'] });
-    this.process = child; this.closing = false;
+    this.process = child;
     child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
     child.stdout.on('data', (chunk) => this.#feed(chunk));
     child.stderr.on('data', (chunk) => { this.stderr = (this.stderr + chunk).slice(-12000); });
-    child.on('error', (error) => this.#failAll(error));
+    child.on('error', (error) => {
+      if (this.process !== child) return;
+      this.process = null;
+      this.#failAll(error);
+    });
     child.on('exit', (code, signal) => {
-      if (this.process === child) this.process = null;
-      if (!this.closing && (this.pending.size || this.notificationWaiters.length || code !== 0 || signal)) {
-        const error = new Error(`codex app-server exited with code ${code ?? 'null'}${signal ? ` (${signal})` : ''}: ${this.stderr.trim()}`);
-        error.code = 'CODEX_APP_SERVER_EXITED'; error.signal = signal || null; this.#failAll(error);
-      }
+      // A controlled close/abort clears this.process before signalling the child.
+      // Therefore an exit that still owns this.process is always unexpected,
+      // including a clean code=0 exit while an RPC lifecycle is active.
+      if (this.process !== child) return;
+      this.process = null;
+      const error = new Error(`codex app-server exited with code ${code ?? 'null'}${signal ? ` (${signal})` : ''}: ${this.stderr.trim()}`);
+      error.code = 'CODEX_APP_SERVER_EXITED'; error.signal = signal || null; this.#failAll(error);
     });
     await this.request('initialize', { clientInfo: { name: 'codex_worker_delegation', title: 'Codex Worker Delegation', version: '3.0.0' }, capabilities: { experimentalApi: true } });
     this.notify('initialized', {}); return this;
@@ -79,10 +86,11 @@ export class CodexAppServerClient {
 
   async #terminate(error) {
     const child = this.process;
-    if (!child) { this.#failAll(error); return; }
-    this.process = null; this.closing = true; this.#failAll(error);
+    this.process = null;
+    this.#failAll(error);
+    if (!child) return;
     try { child.stdin.end(); } catch {}
-    if (child.exitCode !== null || child.signalCode) { this.closing = false; return; }
+    if (child.exitCode !== null || child.signalCode) return;
     await new Promise((resolve) => {
       let settled = false; let killTimer; let finalTimer;
       const done = () => { if (settled) return; settled = true; clearTimeout(killTimer); clearTimeout(finalTimer); child.off('exit', done); resolve(); };
@@ -92,10 +100,12 @@ export class CodexAppServerClient {
       finalTimer = setTimeout(done, this.shutdownTimeoutMs + 1000);
       killTimer.unref?.(); finalTimer.unref?.();
     });
-    this.closing = false;
   }
 
-  notify(method, params = {}) { if (!this.process) throw new Error('codex app-server is not running'); this.process.stdin.write(`${JSON.stringify({ method, params })}\n`); }
+  notify(method, params = {}) {
+    if (!this.process) throw new Error('codex app-server is not running');
+    this.process.stdin.write(`${JSON.stringify({ method, params })}\n`);
+  }
 
   request(method, params = {}, timeoutMs = this.timeoutMs) {
     if (!this.process) return Promise.reject(new Error('codex app-server is not running'));
@@ -155,11 +165,21 @@ export class CodexAppServerClient {
     } finally { unsubscribe(); }
   }
 
+  #protocolFailure(message, code = 'CODEX_APP_SERVER_PROTOCOL_ERROR') {
+    const error = new Error(message); error.code = code; this.stderr = (this.stderr + `\n${message}`).slice(-12000); void this.#terminate(error); return error;
+  }
+
   #feed(chunk) {
     this.buffer += chunk;
+    if (Buffer.byteLength(this.buffer, 'utf8') > MAX_STDOUT_BUFFER_BYTES && !this.buffer.includes('\n')) {
+      this.buffer = '';
+      this.#protocolFailure(`codex app-server stdout exceeded ${MAX_STDOUT_BUFFER_BYTES} bytes without a newline`, 'CODEX_APP_SERVER_PROTOCOL_OVERFLOW');
+      return;
+    }
     while (true) {
       const newline = this.buffer.indexOf('\n'); if (newline < 0) return;
       const line = this.buffer.slice(0, newline).trim(); this.buffer = this.buffer.slice(newline + 1); if (!line) continue;
+      if (Buffer.byteLength(line, 'utf8') > MAX_STDOUT_BUFFER_BYTES) { this.#protocolFailure(`codex app-server JSON-RPC line exceeded ${MAX_STDOUT_BUFFER_BYTES} bytes`, 'CODEX_APP_SERVER_PROTOCOL_OVERFLOW'); return; }
       let message; try { message = JSON.parse(line); } catch { this.stderr = (this.stderr + `\n[invalid app-server stdout] ${line.slice(0,1000)}`).slice(-12000); continue; }
       if (message.method) for (const listener of this.notificationListeners) { try { listener(message); } catch {} }
       if (message.id !== undefined) {
@@ -168,7 +188,13 @@ export class CodexAppServerClient {
       }
       if (!message.method) continue;
       const survivors = [];
-      for (const waiter of this.notificationWaiters) { if (waiter.method === message.method && waiter.predicate(message.params)) { clearTimeout(waiter.timer); waiter.resolve(message.params); } else survivors.push(waiter); }
+      for (const waiter of this.notificationWaiters) {
+        if (waiter.method !== message.method) { survivors.push(waiter); continue; }
+        let matched = false;
+        try { matched = Boolean(waiter.predicate(message.params)); }
+        catch (error) { clearTimeout(waiter.timer); waiter.reject(error); continue; }
+        if (matched) { clearTimeout(waiter.timer); waiter.resolve(message.params); } else survivors.push(waiter);
+      }
       this.notificationWaiters = survivors;
     }
   }
