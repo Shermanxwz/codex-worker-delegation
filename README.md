@@ -121,6 +121,10 @@ The plugin-manager installer remains available:
 ./scripts/install.sh
 ```
 
+After installing or refreshing the plugin, start a **new Codex chat/task**. Codex loads bundled MCP servers and lifecycle hooks when a new session starts; an already-open session does not retroactively gain `delegation_status`, `delegate_worker`, or the `PreToolUse` policy. Review and trust the bundled hook when Codex asks. The active approval policy must also permit the `delegate_worker` MCP call; if the policy is `never`, use the normal approval/automatic-review mode that allows this explicit delegation action.
+
+`WORKER` is not a label-only switch. In a loaded and trusted session, it is `DELEGATE` internally: the root is coordination-only, direct Bash/file-edit/local-function calls are denied by `PreToolUse`, and third-party work must return a real `delegate_worker` result with `execution`, `provider`, `model`, `threadId`, and `status`. A Web-panel state or a marker-only route check is not sufficient proof of Worker execution.
+
 ## Security boundary
 
 - New API keys are encrypted with AES-256-GCM in the project data directory.

@@ -23,6 +23,7 @@ for(const file of manifestFiles) manifests[file]=JSON.parse(await fs.readFile(fi
 
 const pluginPath='plugins/codex-worker-delegation/.codex-plugin/plugin.json';
 const plugin=manifests[pluginPath];
+if(plugin?.hooks!=='./hooks/hooks.json') throw new Error(`${pluginPath}: hooks must be explicitly declared`);
 const prompts=plugin?.interface?.defaultPrompt;
 if(prompts!==undefined){
   if(!Array.isArray(prompts)) throw new Error(`${pluginPath}: interface.defaultPrompt must be an array`);
@@ -38,6 +39,13 @@ const mcp=manifests[mcpPath];
 for(const name of Object.keys(mcp?.mcpServers||{})){
   if(!/^[A-Za-z0-9_]+$/.test(name)) throw new Error(`${mcpPath}: MCP server key ${JSON.stringify(name)} must use letters, digits, or underscores so Codex exposes its tools reliably`);
 }
+const mcpRunner='plugins/codex-worker-delegation/mcp/run.sh';
+if(mcp?.mcpServers?.codex_worker_delegation?.command!=='./mcp/run.sh' || JSON.stringify(mcp?.mcpServers?.codex_worker_delegation?.args||[])!==JSON.stringify([]) || mcp?.mcpServers?.codex_worker_delegation?.cwd!=='.') throw new Error(`${mcpPath}: codex_worker_delegation must use the plugin-local PATH-independent MCP runner`);
+if(!(await fs.stat(mcpRunner)).isFile()) throw new Error(`${mcpRunner}: MCP runner is missing`);
+const hooksRunner='plugins/codex-worker-delegation/hooks/run-policy.sh';
+const hookCommand=manifests['plugins/codex-worker-delegation/hooks/hooks.json']?.hooks?.PreToolUse?.[0]?.hooks?.[0]?.command;
+if(hookCommand!=='bash \"${PLUGIN_ROOT}/hooks/run-policy.sh\"') throw new Error(`plugins/codex-worker-delegation/hooks/hooks.json: policy hook must use the PATH-independent runner`);
+if(!(await fs.stat(hooksRunner)).isFile()) throw new Error(`${hooksRunner}: policy hook runner is missing`);
 
 if(failed)process.exit(1);
 console.log('syntax, shell, Web JS, manifest, Codex prompt-length, and MCP key checks passed');

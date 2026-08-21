@@ -36,4 +36,6 @@ MARKETPLACE="codex-worker-delegation-local"
 
 echo "Installed codex-worker-delegation through the official Codex plugin manager."
 echo "Review/trust the bundled PreToolUse hook when Codex prompts you."
+echo "Start a new Codex chat/task after installation so its MCP tools and hooks are loaded."
+echo "The active Codex approval policy must permit the delegate_worker MCP call."
 echo "Start the Web control plane with: npm start"
