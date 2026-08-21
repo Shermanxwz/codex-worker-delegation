@@ -46,7 +46,7 @@ jobs:
         with: {node-version: "22"}
       - name: Install current official Codex package
         run: npm install --no-save @openai/codex
-      - name: Exercise install, upgrade, rollback, validation, and uninstall
+      - name: Exercise install, service entry, upgrade, rollback, validation, and uninstall
         shell: bash
         run: |
           set -euo pipefail
@@ -54,6 +54,7 @@ jobs:
           export CODEX_HOME="$HOME/.codex"
           export CWD_INSTALL_ROOT="$HOME/.local/share/codex-worker-delegation"
           export CODEX_BIN="$GITHUB_WORKSPACE/node_modules/.bin/codex"
+          export CWD_NODE_BIN="$(command -v node)"
           export CWD_ALLOW_ROOT_INSTALL=1
           export CWD_INSTALL_NO_SYSTEMD=1
           mkdir -p "$CODEX_HOME"
@@ -65,6 +66,19 @@ jobs:
           CWD_RELEASE_ID=ci-second bash scripts/install-linux.sh
           test "$(cat "$CWD_INSTALL_ROOT/current/.release-id")" = ci-second
           test "$(cat "$CWD_INSTALL_ROOT/previous/.release-id")" = ci-first
+
+          systemd-analyze verify "$HOME/.config/systemd/user/codex-worker-delegation.service"
+          CWD_PORT=8878 "$CWD_INSTALL_ROOT/current/scripts/service-entry.sh" >/tmp/cwd-service-entry.log 2>&1 &
+          service_pid=$!
+          trap 'kill "$service_pid" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 40); do
+            if curl --silent --fail --max-time 1 http://127.0.0.1:8878/api/health >/dev/null 2>&1; then break; fi
+            sleep 0.25
+          done
+          curl --silent --fail --max-time 2 http://127.0.0.1:8878/api/health
+          kill "$service_pid"
+          wait "$service_pid" || true
+          trap - EXIT
 
           bash "$CWD_INSTALL_ROOT/current/scripts/rollback-linux.sh"
           test "$(cat "$CWD_INSTALL_ROOT/current/.release-id")" = ci-first
