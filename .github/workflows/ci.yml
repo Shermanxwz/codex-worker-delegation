@@ -1,11 +1,20 @@
 name: CI
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
+
 jobs:
   test:
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -16,9 +25,22 @@ jobs:
       - uses: actions/setup-node@v5
         with: {node-version: "${{ matrix.node }}"}
       - run: npm run check
-      - run: npm test
+      - name: Deterministic bounded test suite
+        run: npm test
+
+  test-parallel-stress:
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: {node-version: "24"}
+      - run: npm run check
+      - name: Parallel process-isolation stress suite
+        run: npm run test:parallel
 
   codex-smoke:
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -39,6 +61,7 @@ jobs:
         run: node scripts/real-codex-e2e.mjs
 
   deployment-contract:
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -100,6 +123,7 @@ jobs:
           test ! -e "$unit"
 
   deployment-root-contract:
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -171,6 +195,7 @@ jobs:
             '
 
   chatgpt-linux-baseline:
+    timeout-minutes: 25
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -227,6 +252,7 @@ jobs:
           retention-days: 90
 
   chatgpt-linux-latest:
+    timeout-minutes: 25
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
