@@ -2,6 +2,8 @@ name: CI
 on:
   push:
   pull_request:
+permissions:
+  contents: read
 jobs:
   test:
     strategy:
@@ -15,6 +17,7 @@ jobs:
         with: {node-version: "${{ matrix.node }}"}
       - run: npm run check
       - run: npm test
+
   codex-smoke:
     runs-on: ubuntu-latest
     steps:
@@ -30,38 +33,89 @@ jobs:
           rm -rf /tmp/codex-schema
           npx codex app-server generate-json-schema --out /tmp/codex-schema
           test -n "$(find /tmp/codex-schema -type f -print -quit)"
-      - name: Install repository marketplace through official Codex manager
-        run: |
-          npx codex plugin marketplace add "$GITHUB_WORKSPACE"
-          npx codex plugin add codex-worker-delegation@codex-worker-delegation-local
-          npx codex plugin list --json
-      - name: Real Codex app-server cross-provider E2E
+      - name: Real Codex plugin manager + app-server cross-provider E2E
         env:
           CODEX_BIN: ${{ github.workspace }}/node_modules/.bin/codex
         run: node scripts/real-codex-e2e.mjs
+
+  deployment-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: "22"}
+      - name: Install current official Codex package
+        run: npm install --no-save @openai/codex
+      - name: Exercise install, upgrade, rollback, validation, and uninstall
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HOME="$RUNNER_TEMP/cwd-home"
+          export CODEX_HOME="$HOME/.codex"
+          export CWD_INSTALL_ROOT="$HOME/.local/share/codex-worker-delegation"
+          export CODEX_BIN="$GITHUB_WORKSPACE/node_modules/.bin/codex"
+          export CWD_ALLOW_ROOT_INSTALL=1
+          export CWD_INSTALL_NO_SYSTEMD=1
+          mkdir -p "$CODEX_HOME"
+          printf '%s\n' '{"tokens":{"access_token":"CI-PRESERVE"}}' > "$CODEX_HOME/auth.json"
+          chmod 600 "$CODEX_HOME/auth.json"
+          auth_before="$(sha256sum "$CODEX_HOME/auth.json" | awk '{print $1}')"
+
+          CWD_RELEASE_ID=ci-first bash scripts/install-linux.sh
+          CWD_RELEASE_ID=ci-second bash scripts/install-linux.sh
+          test "$(cat "$CWD_INSTALL_ROOT/current/.release-id")" = ci-second
+          test "$(cat "$CWD_INSTALL_ROOT/previous/.release-id")" = ci-first
+
+          bash "$CWD_INSTALL_ROOT/current/scripts/rollback-linux.sh"
+          test "$(cat "$CWD_INSTALL_ROOT/current/.release-id")" = ci-first
+          test "$(cat "$CWD_INSTALL_ROOT/previous/.release-id")" = ci-second
+          bash "$CWD_INSTALL_ROOT/current/scripts/validate-deployment.sh"
+
+          bash "$CWD_INSTALL_ROOT/current/scripts/uninstall-linux.sh"
+          auth_after="$(sha256sum "$CODEX_HOME/auth.json" | awk '{print $1}')"
+          test "$auth_before" = "$auth_after"
+          ! grep -q 'codex_worker_gateway' "$CODEX_HOME/config.toml"
+
   chatgpt-linux-package:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: "22"}
       - name: Download official ChatGPT Linux deb
         run: |
+          set -euo pipefail
           curl --fail --location --retry 3 --retry-delay 2 \
             https://persistent.oaistatic.com/codex-app-prod/linux/deb/latest/chatgpt_amd64.deb \
             --output /tmp/chatgpt_amd64.deb
           test -s /tmp/chatgpt_amd64.deb
-          dpkg-deb --info /tmp/chatgpt_amd64.deb
-      - name: Extract and inspect official Linux package layout
+          sha256sum /tmp/chatgpt_amd64.deb | tee /tmp/chatgpt-package-metadata.txt
+          dpkg-deb --info /tmp/chatgpt_amd64.deb | tee -a /tmp/chatgpt-package-metadata.txt
+      - name: Extract official Linux package and execute bundled Codex
         run: |
-          rm -rf /tmp/chatgpt-root
+          set -euo pipefail
+          rm -rf /tmp/chatgpt-root /tmp/chatgpt-schema
           mkdir -p /tmp/chatgpt-root
           dpkg-deb --extract /tmp/chatgpt_amd64.deb /tmp/chatgpt-root
-          echo '--- executable candidates ---'
-          find /tmp/chatgpt-root -type f -perm /111 -printf '%p\n' | sort | tee /tmp/chatgpt-executables.txt
-          echo '--- codex/chatgpt paths ---'
-          find /tmp/chatgpt-root -type f \( -iname '*codex*' -o -iname '*chatgpt*' \) -printf '%p\n' | sort | tee /tmp/chatgpt-interesting.txt
-          test -n "$(cat /tmp/chatgpt-executables.txt)"
-          test -n "$(grep -Ei 'chatgpt|codex' /tmp/chatgpt-interesting.txt | head -1)"
-      - name: Verify project Linux Codex discovery covers desktop-managed path
+          BUNDLED=/tmp/chatgpt-root/usr/lib/chatgpt/resources/codex
+          test -x "$BUNDLED"
+          "$BUNDLED" --version | tee -a /tmp/chatgpt-package-metadata.txt
+          "$BUNDLED" app-server generate-json-schema --out /tmp/chatgpt-schema
+          test -n "$(find /tmp/chatgpt-schema -type f -print -quit)"
+          echo "BUNDLED_CODEX=$BUNDLED" >> "$GITHUB_ENV"
+      - name: Real E2E through the Codex binary bundled in ChatGPT Linux
+        env:
+          CODEX_BIN: ${{ env.BUNDLED_CODEX }}
+        run: node scripts/real-codex-e2e.mjs
+      - name: Verify project discovery contract matches packaged path
         run: |
-          grep -F ".local', 'bin', 'codex" src/app-server.mjs
+          grep -F "'/usr/lib/chatgpt/resources/codex'" src/app-server.mjs
           grep -F "CODEX_CLI_PATH" src/app-server.mjs
+      - name: Upload package seal evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt-linux-package-evidence-${{ github.run_id }}
+          path: /tmp/chatgpt-package-metadata.txt
+          if-no-files-found: error
+          retention-days: 30
