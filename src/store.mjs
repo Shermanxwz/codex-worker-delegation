@@ -30,8 +30,23 @@ export const DEFAULT_STATE = Object.freeze({
   updatedAt: null
 });
 
+const STATE_LOCK_TIMEOUT_MS = 10_000;
+const STATE_LOCK_STALE_MS = 60_000;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function syncDirectory(directory) {
+  let handle;
+  try {
+    handle = await fs.open(directory, 'r');
+    await handle.sync();
+  } finally {
+    if (handle) await handle.close().catch(() => {});
+  }
+}
+
 async function atomicWrite(file, text, mode = 0o600) {
-  await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+  const directory = path.dirname(file);
+  await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   const tmp = `${file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
   let handle;
   try {
@@ -42,9 +57,63 @@ async function atomicWrite(file, text, mode = 0o600) {
     handle = null;
     await fs.rename(tmp, file);
     await fs.chmod(file, mode).catch(() => {});
+    await syncDirectory(directory);
   } finally {
     if (handle) await handle.close().catch(() => {});
     await fs.unlink(tmp).catch((error) => { if (error.code !== 'ENOENT') throw error; });
+  }
+}
+
+async function lockOwnerAlive(lockFile) {
+  try {
+    const raw = JSON.parse(await fs.readFile(lockFile, 'utf8'));
+    const pid = Number(raw?.pid);
+    if (!Number.isInteger(pid) || pid <= 0) return false;
+    try { process.kill(pid, 0); return true; }
+    catch (error) { return error.code !== 'ESRCH'; }
+  } catch { return false; }
+}
+
+async function acquireFileLock(targetFile) {
+  const directory = path.dirname(targetFile);
+  const lockFile = `${targetFile}.lock`;
+  await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+  const startedAt = Date.now();
+  while (true) {
+    let handle;
+    try {
+      handle = await fs.open(lockFile, 'wx', 0o600);
+      await handle.writeFile(`${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })}\n`);
+      await handle.sync();
+      let released = false;
+      return async () => {
+        if (released) return;
+        released = true;
+        await handle.close().catch(() => {});
+        await fs.unlink(lockFile).catch((error) => { if (error.code !== 'ENOENT') throw error; });
+      };
+    } catch (error) {
+      if (handle) await handle.close().catch(() => {});
+      if (error.code !== 'EEXIST') throw error;
+      let stale = false;
+      try {
+        const stat = await fs.stat(lockFile);
+        stale = (Date.now() - stat.mtimeMs) > STATE_LOCK_STALE_MS || !await lockOwnerAlive(lockFile);
+      } catch (statError) {
+        if (statError.code === 'ENOENT') continue;
+        throw statError;
+      }
+      if (stale) {
+        await fs.unlink(lockFile).catch((unlinkError) => { if (unlinkError.code !== 'ENOENT') throw unlinkError; });
+        continue;
+      }
+      if ((Date.now() - startedAt) >= STATE_LOCK_TIMEOUT_MS) {
+        const timeout = new Error(`Timed out acquiring state lock ${lockFile}`);
+        timeout.code = 'STATE_LOCK_TIMEOUT';
+        throw timeout;
+      }
+      await sleep(10 + crypto.randomInt(0, 31));
+    }
   }
 }
 
@@ -118,7 +187,8 @@ async function readGatewayToken(file) {
 }
 
 async function createGatewayToken(file) {
-  await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+  const directory = path.dirname(file);
+  await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   try { return await readGatewayToken(file); }
   catch (error) { if (error.code !== 'ENOENT') throw error; }
 
@@ -136,6 +206,7 @@ async function createGatewayToken(file) {
       // or reads the winner; it can never observe an empty/partial final token.
       await fs.link(temporary, file);
       await fs.chmod(file, 0o600).catch(() => {});
+      await syncDirectory(directory);
       return token;
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
@@ -164,22 +235,28 @@ export class StateStore {
   }
 
   async write(next) {
-    return this.#enqueueMutation(() => this.#writeUnlocked(next));
+    return this.#enqueueMutation(() => this.#withFileLock(() => this.#writeUnlocked(next)));
   }
 
   async update(mutator) {
     if (typeof mutator !== 'function') throw new TypeError('StateStore.update requires a mutator function');
-    return this.#enqueueMutation(async () => {
+    return this.#enqueueMutation(() => this.#withFileLock(async () => {
       const current = await this.read();
       const next = await mutator(structuredClone(current));
       return this.#writeUnlocked(next ?? current);
-    });
+    }));
   }
 
   #enqueueMutation(operation) {
     const run = this.mutationTail.catch(() => {}).then(operation);
     this.mutationTail = run.then(() => undefined, () => undefined);
     return run;
+  }
+
+  async #withFileLock(operation) {
+    const release = await acquireFileLock(this.file);
+    try { return await operation(); }
+    finally { await release(); }
   }
 
   async #writeUnlocked(next) {

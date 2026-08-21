@@ -18,7 +18,11 @@ export const REQUIRED_CORE_CHECKS = Object.freeze([
   'real third-party Worker delegation',
   'ChatGPT auth.json is byte-for-byte unchanged',
   'official top-level model selectors are unchanged',
-  'managed provider config is present'
+  'managed provider config is present',
+  'target deployment validation',
+  'authenticated hook/control-plane liveness proof',
+  'Codex plugin cache payload integrity',
+  'active release tree matches install record'
 ]);
 
 export const SEAL_CLASSIFICATIONS = Object.freeze({
