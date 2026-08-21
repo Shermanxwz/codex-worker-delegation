@@ -24,6 +24,10 @@ export function inspectTopLevel(text) {
   return found;
 }
 
+export function sameTopLevelSelectors(a = {}, b = {}) {
+  return ['model_provider', 'model'].every((key) => (a?.[key]?.raw || null) === (b?.[key]?.raw || null));
+}
+
 function removeManagedSections(text) {
   const out = []; let skipping = false;
   for (const line of text.split(/\r?\n/)) {
@@ -34,38 +38,16 @@ function removeManagedSections(text) {
   return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd();
 }
 
-function setTopLevel(text, key, rawValue) {
-  const lines = text.split(/\r?\n/); let sectionSeen = false; let replaced = false;
-  for (let i = 0; i < lines.length; i++) {
-    if (sectionName(lines[i])) sectionSeen = true;
-    if (!sectionSeen && new RegExp(`^\\s*${key}\\s*=`).test(lines[i])) { lines[i] = `${key} = ${rawValue}`; replaced = true; break; }
-  }
-  if (!replaced) {
-    const firstSection = lines.findIndex((l) => sectionName(l));
-    const at = firstSection < 0 ? lines.length : firstSection;
-    lines.splice(at, 0, `${key} = ${rawValue}`, '');
-  }
-  return lines.join('\n');
-}
-
-function removeTopLevel(text, key) {
-  const lines = text.split(/\r?\n/); let sectionSeen = false;
-  return lines.filter((line) => {
-    if (sectionName(line)) sectionSeen = true;
-    return sectionSeen || !new RegExp(`^\\s*${key}\\s*=`).test(line);
-  }).join('\n').replace(/\n{3,}/g, '\n\n');
-}
-
 function managedBlock({ baseUrl, tokenFile }) {
-  return `\n\n# --- codex-worker-delegation managed provider ---\n[model_providers.${PROVIDER}]\nname = "Codex Worker Delegation Gateway"\nbase_url = ${quote(baseUrl)}\nwire_api = "responses"\nrequires_openai_auth = false\n\n[model_providers.${PROVIDER}.auth]\ncommand = "cat"\nargs = [${quote(tokenFile)}]\n# --- end codex-worker-delegation managed provider ---\n`;
+  return `\n\n# --- codex-worker-delegation managed provider ---\n[model_providers.${PROVIDER}]\nname = "Codex Worker Delegation Gateway"\nbase_url = ${quote(baseUrl)}\nwire_api = "responses"\n\n[model_providers.${PROVIDER}.auth]\ncommand = "cat"\nargs = [${quote(tokenFile)}]\n# --- end codex-worker-delegation managed provider ---\n`;
 }
 
 function workerRoleFile() {
-  return `name = "cwd-worker"\ndescription = "Execution worker managed by Codex Worker Delegation. Use for implementation and body work when the selected route uses the same provider as the root thread."\ndeveloper_instructions = "You are an implementation worker. Own the assigned files and task. Do not undo unrelated edits. Execute, test, and report concrete results. The parent thread remains the coordinator."\n`;
+  return `name = "cwd-worker"\ndescription = "Implementation worker managed by Codex Worker Delegation. Native spawning is used only on the built-in OpenAI provider; third-party routes use isolated App Server threads to avoid custom-provider subagent transport bugs."\ndeveloper_instructions = "You are an implementation worker. Own the assigned files and task. Do not undo unrelated edits. Execute, test, and report concrete results. The parent thread remains the coordinator."\n`;
 }
 
 function verifierRoleFile() {
-  return `name = "cwd-verifier"\ndescription = "Independent verifier managed by Codex Worker Delegation. Use for review and validation after meaningful implementation work."\ndeveloper_instructions = "You are an independent verifier. Inspect and test the implementation, identify concrete regressions, and report evidence. Do not make implementation changes unless the parent explicitly reassigns you as a worker."\n`;
+  return `name = "cwd-verifier"\ndescription = "Independent verifier managed by Codex Worker Delegation. Native spawning is used only on the built-in OpenAI provider; third-party routes use isolated App Server threads."\ndeveloper_instructions = "You are an independent verifier. Inspect and test the implementation, identify concrete regressions, and report evidence. Do not make implementation changes unless the parent explicitly reassigns you as a worker."\n`;
 }
 
 export class CodexConfigManager {
@@ -79,12 +61,16 @@ export class CodexConfigManager {
 
   async read() { try { return await fs.readFile(this.file, 'utf8'); } catch (e) { if (e.code === 'ENOENT') return ''; throw e; } }
 
+  async selectors() { return inspectTopLevel(await this.read()); }
+
   async install() {
     await fs.mkdir(this.home, { recursive: true, mode: 0o700 });
     await fs.mkdir(this.agentsDir, { recursive: true, mode: 0o700 });
     const before = await this.read();
-    const originalTopLevel = inspectTopLevel(before);
+    const selectorsBefore = inspectTopLevel(before);
     const next = removeManagedSections(before) + managedBlock({ baseUrl: this.gatewayBaseUrl, tokenFile: gatewayTokenPath(this.env) });
+    const selectorsAfter = inspectTopLevel(next);
+    if (!sameTopLevelSelectors(selectorsBefore, selectorsAfter)) throw new Error('Refusing to install: official top-level model selector would change');
     await this.#backupAndWrite(before, next);
     await this.#writeRole(path.join(this.agentsDir, 'cwd-worker.toml'), workerRoleFile());
     await this.#writeRole(path.join(this.agentsDir, 'cwd-verifier.toml'), verifierRoleFile());
@@ -92,23 +78,7 @@ export class CodexConfigManager {
       fs.rm(path.join(this.home, 'cwd-worker.config.toml'), { force: true }),
       fs.rm(path.join(this.home, 'cwd-verifier.config.toml'), { force: true })
     ]);
-    return { originalTopLevel, providerId: PROVIDER, agents: ['cwd-worker', 'cwd-verifier'] };
-  }
-
-  async activateThirdPartyMain(model) {
-    let text = await this.read();
-    text = setTopLevel(text, 'model_provider', quote(PROVIDER));
-    text = setTopLevel(text, 'model', quote(model));
-    await this.#backupAndWrite(await this.read(), text);
-  }
-
-  async restoreOfficial(originalTopLevel = {}) {
-    let text = await this.read();
-    for (const key of ['model_provider', 'model']) {
-      if (originalTopLevel?.[key]?.raw) text = setTopLevel(text, key, originalTopLevel[key].raw);
-      else text = removeTopLevel(text, key);
-    }
-    await this.#backupAndWrite(await this.read(), text);
+    return { selectorsBefore, selectorsAfter, topLevelPreserved: true, providerId: PROVIDER, agents: ['cwd-worker', 'cwd-verifier'] };
   }
 
   async #writeRole(file, text) {
@@ -125,6 +95,7 @@ export class CodexConfigManager {
     const tmp = `${this.file}.cwd.tmp`;
     await fs.writeFile(tmp, next.endsWith('\n') ? next : `${next}\n`, { mode: 0o600 });
     await fs.rename(tmp, this.file);
+    await fs.chmod(this.file, 0o600).catch(() => {});
   }
 }
 

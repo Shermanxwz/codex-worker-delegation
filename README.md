@@ -1,73 +1,98 @@
 # Codex Worker Delegation
 
-Native delegation control plane for the official **ChatGPT Linux / Codex desktop runtime**, with official ChatGPT authentication and third-party OpenAI-compatible models coexisting at the same time.
+A Codex-native local control plane for the official **ChatGPT Linux desktop / Codex runtime**. It keeps Codex-owned ChatGPT authentication intact while adding a separate New API / OpenAI-compatible provider, explicit per-role model routing, current App Server integration, and a Responses compatibility gateway.
 
-## v2 architecture
-
-The project no longer treats provider switching as login switching.
+## v3: coexistence is thread routing, not login switching
 
 ```text
-ChatGPT Linux Desktop / Codex
-        |
-        | official Codex app-server + plugin surfaces
-        v
-Codex Worker Delegation
-        |
-        +-- Official ChatGPT provider (`openai`)
-        |     `-- existing ChatGPT OAuth / auth.json stays owned by Codex
-        |
-        `-- Third-party provider (`codex_worker_gateway`)
-              `-- local Responses gateway
-                    |-- native /v1/responses when supported
-                    `-- /v1/chat/completions compatibility bridge when needed
+ChatGPT Linux / Codex
+  |
+  +-- built-in `openai` provider ---------------- ChatGPT OAuth / auth.json (Codex-owned)
+  |
+  `-- `codex_worker_gateway` provider ------------ local command-backed token
+          |
+          `-- encrypted New API credential
+                 |-- upstream /v1/responses
+                 `-- upstream /v1/chat/completions bridge
 ```
 
-**The third-party provider does not replace the built-in `openai` provider and does not require logging out of ChatGPT.** Its API key is encrypted in this project's local vault. Codex receives only a generated local bearer token through `[model_providers.codex_worker_gateway.auth]`.
+The project **never needs to replace the top-level `model_provider`, rewrite `auth.json`, or log ChatGPT out**. Provider and model are chosen when a new Codex thread is created. The Web panel can prove coexistence on the actual machine by running:
 
-## Worker execution model
+```text
+account/read (ChatGPT)
+  -> thread/start(modelProvider="codex_worker_gateway")
+  -> a real third-party model turn
+  -> account/read (ChatGPT)
+  -> verify top-level model_provider/model stayed unchanged
+```
 
-Current Codex supports model overrides for native `spawn_agent`, but a spawned child inherits the parent's model provider. Therefore v2 uses two explicit execution paths instead of pretending cross-provider workers are native children:
+## Worker policy aligned with current Codex
 
-| Main provider vs worker provider | Execution path |
-|---|---|
-| Same provider | Codex Native Subagent (`spawn_agent`, `cwd-worker`, `cwd-verifier`) |
-| Different provider | Codex App Server provider-specific Worker Thread (`thread/start.modelProvider`) |
+Current Codex releases enable subagent workflows and support custom agent models. However, 2026 custom-provider Multi-Agent V2 builds have reproducible failures where native `spawn_agent` payloads reach non-OpenAI providers as provider-specific `agent_message` / `encrypted_content` and can arrive empty.
 
-The Web UI labels this provenance as **Native Subagent** or **Cross-provider Thread**.
+v3 therefore fails safe:
+
+| Main route | Worker/Verifier route | Execution |
+|---|---|---|
+| Official ChatGPT | Official ChatGPT | **Native Subagent** (`cwd-worker` / `cwd-verifier`) |
+| Official ChatGPT | New API | **Cross-provider App Server Thread** |
+| New API | Official ChatGPT | **Cross-provider App Server Thread** |
+| New API | New API | **Provider-isolated App Server Thread** |
+
+Third-party → third-party intentionally uses an independent App Server thread instead of native spawn until upstream custom-provider subagent transport is reliable. This is visible in Web/MCP results; the project does not fake native-subagent provenance.
 
 ## Web control plane
 
-The Web panel controls all three modes independently:
+The Web UI owns all normal operations:
 
-- `AUTO`
-- `DELEGATE`
-- `MAIN`
+- `AUTO`, `DELEGATE`, `MAIN` modes.
+- Independent **provider + model** selection for Main / Worker / Verifier in every mode.
+- Official model discovery from the running Codex `model/list` API.
+- Third-party model discovery from New API `/v1/models`, with manual model ID fallback.
+- New API Base URL + key + protocol configuration.
+- Per-model protocol probe/cache.
+- Install/refresh of the namespaced Codex provider and agent roles.
+- **真实共存验收** runtime proof.
+- Real route execution for Worker / Verifier.
 
-For every mode, select provider + model separately for:
+## New API endpoint normalization and protocol detection
 
-- Main
-- Worker
-- Verifier
+The Base URL may be entered as a service root, `/v1`, `/v1/responses`, `/v1/chat/completions`, or `/v1/models`. The control plane derives the related endpoints.
 
-Official models are loaded from the running Codex `model/list` API. Third-party models are loaded from the configured New API `/v1/models` endpoint. Manual model IDs remain available for providers that do not expose a model catalog.
-
-## Protocol auto-detection
-
-Codex itself now expects Responses wire format for custom providers. The local gateway therefore always exposes `/v1/responses` to Codex and adapts the upstream provider per model:
+Codex custom providers currently use the Responses wire API, so Codex always talks to this project's local `/v1/responses` gateway. With `protocol=auto`, the gateway decides **per model**:
 
 1. Try upstream `/v1/responses`.
-2. Cache native Responses support when successful.
-3. Fall back to `/v1/chat/completions` only when the Responses endpoint is actually unsupported.
-4. Do **not** misclassify authentication, quota, validation, or missing-model errors as a chat-only provider.
-5. Translate streaming text, function calls, tool outputs, and usage back to Codex-consumable Responses events.
+2. Cache `responses` on success.
+3. Fall back to `/v1/chat/completions` only when the Responses route is genuinely unsupported.
+4. Never reinterpret authentication, quota, validation, or missing-model failures as “chat-only”.
+5. Translate streaming text, tools, tool outputs, and usage back to Responses semantics.
+
+## Correct Codex provider auth
+
+Installation adds only a namespaced custom provider:
+
+```toml
+[model_providers.codex_worker_gateway]
+name = "Codex Worker Delegation Gateway"
+base_url = "http://127.0.0.1:8788/v1"
+wire_api = "responses"
+
+[model_providers.codex_worker_gateway.auth]
+command = "cat"
+args = ["<local gateway.token>"]
+```
+
+Command-backed `auth` is intentionally **not combined with `requires_openai_auth`**. The gateway token is separate from both ChatGPT OAuth and the upstream New API key.
+
+## Linux / App Server integration
+
+Codex discovery includes the ChatGPT Linux packaged path `/usr/lib/chatgpt/resources/codex`, desktop-managed user paths, explicit `CODEX_CLI_PATH` / `CODEX_BIN`, and `PATH` fallback.
+
+App Server threads use current protocol values including `sandbox: "workspaceWrite"` / `"readOnly"`, explicit `modelProvider`, and `serviceName`. Official model pickers are populated by paginated `model/list` rather than a hard-coded model list.
 
 ## Install
 
-Requirements:
-
-- Official ChatGPT/Codex Linux runtime or current Codex binary
-- Node.js 20+
-- A New API / OpenAI-compatible endpoint if third-party routing is desired
+Requirements: official ChatGPT/Codex Linux runtime (or a current Codex binary) and Node.js 20+.
 
 ```bash
 npm run check
@@ -75,88 +100,44 @@ npm test
 npm start
 ```
 
-Open the printed loopback Web URL, configure New API if needed, choose the routing matrix, and press **Install / Refresh**.
+Open the loopback Web URL, configure New API, select routing, and press **安装 / 刷新**. Use **真实共存验收** on the real Linux install when you want direct proof that a third-party turn and ChatGPT login coexist in one `CODEX_HOME`.
 
-The install action:
-
-- adds only `model_providers.codex_worker_gateway` to `~/.codex/config.toml`;
-- writes current auto-discovered roles to `~/.codex/agents/cwd-worker.toml` and `~/.codex/agents/cwd-verifier.toml`;
-- generates a local gateway bearer token;
-- does not write the upstream API key into Codex config;
-- does not modify `auth.json`;
-- does not replace the top-level `model_provider` or `model` selector.
-
-The repository also remains installable through the Codex plugin manager:
+The plugin-manager installer remains available:
 
 ```bash
 ./scripts/install.sh
 ```
 
-## Modes
-
-### AUTO
-
-Codex can keep light work on Main and delegate substantial/separable work. The selected Main/Worker/Verifier routing remains visible in the Web panel.
-
-### DELEGATE
-
-Main is coordination-only. The PreToolUse hook blocks body-work tools on the root thread while allowing native agent coordination and the bundled cross-provider `delegate_worker` MCP tool.
-
-### MAIN
-
-Main performs the work directly. New native subagents and cross-provider worker delegation are blocked.
-
 ## Security boundary
 
 - New API keys are encrypted with AES-256-GCM in the project data directory.
-- The gateway binds to loopback by default.
-- Codex authenticates to the gateway with a random local token.
+- The gateway binds to loopback by default and requires a random local bearer token.
 - The Web API is loopback-only unless `CWD_WEB_TOKEN` is configured.
 - Provider URLs reject embedded credentials and non-HTTP(S) schemes.
-- Custom Authorization headers supplied through provider metadata are rejected.
-- Verifier mutation/execution tools are blocked by policy.
-- The project never needs to copy ChatGPT OAuth tokens into a third-party provider.
+- User-supplied custom `Authorization` headers are rejected.
+- `auth.json` stays Codex-owned and is never copied to the third-party provider.
+- Verifier App Server threads use `readOnly`; hook policy also blocks mutation/execution patterns for native verifier roles.
 
-See `docs/SECURITY.md` for threat boundaries.
+See `docs/SECURITY.md` for details.
 
 ## Validation
 
-`npm test` covers the gateway, Responses↔Chat translation, hook enforcement, MCP server, configuration migration, v2 routing, Web API, and an app-server protocol harness.
+The repository test suite covers provider URL normalization, model listing, protocol probing, Responses↔Chat translation, gateway behavior, config preservation, App Server protocol, routing/policy, hooks, MCP, state and Web API.
 
-CI additionally installs the current official `@openai/codex` and runs `scripts/real-codex-e2e.mjs`, which proves the real flow:
+CI additionally:
 
-```text
-real codex app-server
-  -> thread/start(modelProvider="codex_worker_gateway")
-  -> local /v1/responses gateway
-  -> fake chat-only New API
-  -> /v1/responses rejected as unsupported
-  -> automatic /v1/chat/completions bridge
-  -> Responses stream returned to Codex
-```
+- tests Node 20/22/24;
+- installs the current official `@openai/codex`;
+- generates the current App Server JSON schema;
+- installs this repository through the official Codex plugin manager;
+- runs the real Codex App Server → local Responses gateway → fake chat-only New API E2E;
+- downloads and extracts the official ChatGPT Linux `.deb` to validate packaged runtime discovery.
 
-The E2E also asserts that the pre-existing official top-level selector is preserved and no `auth.json` is created or rewritten by this project.
+The real-Codex E2E proves that explicit `thread/start(modelProvider="codex_worker_gateway")` can traverse the gateway, auto-detect a chat-only upstream, translate the stream back to Responses, and leave the pre-existing official top-level selector unchanged.
 
-## Repository layout
+## Repository policy
 
-```text
-src/
-  app-server.mjs      Codex app-server JSON-RPC client and Linux binary discovery
-  codex-config.mjs    isolated provider + current ~/.codex/agents role installation
-  gateway.mjs         local Responses gateway
-  provider.mjs        New API endpoints, model catalog, protocol probing
-  server.mjs          Web/control/internal worker API
-  store.mjs           v2 mode/role/provider/model state
-
-plugins/codex-worker-delegation/
-  hooks/              DELEGATE / MAIN enforcement
-  mcp/                status + cross-provider delegate_worker
-  skills/             routing instructions for Codex
-
-public/                Web routing control plane
-test/                  unit/integration tests
-scripts/real-codex-e2e.mjs
-```
+`main` is the single active branch for this repository. The older `openclaw-worker-delegation` repository is retained only as archived history/reference; this repository is the maintained implementation.
 
 ## License
 

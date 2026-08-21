@@ -4,6 +4,17 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 
 const DEFAULT_TIMEOUT_MS = 15000;
+const SANDBOX_ALIASES = new Map([
+  ['read-only', 'readOnly'], ['readonly', 'readOnly'], ['readOnly', 'readOnly'],
+  ['workspace-write', 'workspaceWrite'], ['workspacewrite', 'workspaceWrite'], ['workspaceWrite', 'workspaceWrite'],
+  ['danger-full-access', 'dangerFullAccess'], ['dangerfullaccess', 'dangerFullAccess'], ['dangerFullAccess', 'dangerFullAccess']
+]);
+
+export function normalizeSandboxMode(value = 'workspaceWrite') {
+  const normalized = SANDBOX_ALIASES.get(String(value));
+  if (!normalized) throw new Error(`Unsupported Codex sandbox mode: ${value}`);
+  return normalized;
+}
 
 export function codexBinaryCandidates(env = process.env) {
   const explicit = [env.CODEX_CLI_PATH, env.CODEX_BIN].filter(Boolean);
@@ -54,7 +65,7 @@ export class CodexAppServerClient {
       this.process = null;
     });
     await this.request('initialize', {
-      clientInfo: { name: 'codex_worker_delegation', title: 'Codex Worker Delegation', version: '2.0.0' },
+      clientInfo: { name: 'codex_worker_delegation', title: 'Codex Worker Delegation', version: '3.0.0' },
       capabilities: { experimentalApi: true }
     });
     this.notify('initialized', {});
@@ -98,13 +109,10 @@ export class CodexAppServerClient {
     });
   }
 
-  async getAccount({ refreshToken = false } = {}) {
-    return this.request('account/read', { refreshToken });
-  }
+  async getAccount({ refreshToken = false } = {}) { return this.request('account/read', { refreshToken }); }
 
   async listModels({ includeHidden = false } = {}) {
-    const all = [];
-    let cursor = null;
+    const all = []; let cursor = null;
     do {
       const response = await this.request('model/list', { cursor, limit: 100, includeHidden });
       all.push(...(response?.data || []));
@@ -113,7 +121,7 @@ export class CodexAppServerClient {
     return all;
   }
 
-  async runThread({ model, modelProvider, prompt, cwd = process.cwd(), sandbox = 'workspace-write', developerInstructions, timeoutMs = 180000 }) {
+  async runThread({ model, modelProvider, prompt, cwd = process.cwd(), sandbox = 'workspaceWrite', developerInstructions, timeoutMs = 180000 }) {
     if (!model) throw new Error('model is required');
     if (!modelProvider) throw new Error('modelProvider is required');
     if (!prompt?.trim()) throw new Error('prompt is required');
@@ -121,18 +129,16 @@ export class CodexAppServerClient {
       model,
       modelProvider,
       cwd,
-      sandbox,
+      sandbox: normalizeSandboxMode(sandbox),
       approvalPolicy: 'never',
       ephemeral: true,
+      serviceName: 'codex-worker-delegation',
       ...(developerInstructions ? { developerInstructions } : {})
     });
     const threadId = started?.thread?.id;
     if (!threadId) throw new Error(`thread/start did not return a thread id: ${JSON.stringify(started)}`);
     const completion = this.waitForNotification('turn/completed', (params) => params?.threadId === threadId, timeoutMs);
-    await this.request('turn/start', {
-      threadId,
-      input: [{ type: 'text', text: String(prompt), text_elements: [] }]
-    });
+    await this.request('turn/start', { threadId, input: [{ type: 'text', text: String(prompt), text_elements: [] }] });
     const params = await completion;
     const items = params?.turn?.items || [];
     const messages = items.filter((item) => item?.type === 'agentMessage' && typeof item.text === 'string').map((item) => item.text);
@@ -170,8 +176,7 @@ export class CodexAppServerClient {
       const survivors = [];
       for (const waiter of this.notificationWaiters) {
         if (waiter.method === message.method && waiter.predicate(message.params)) {
-          clearTimeout(waiter.timer);
-          waiter.resolve(message.params);
+          clearTimeout(waiter.timer); waiter.resolve(message.params);
         } else survivors.push(waiter);
       }
       this.notificationWaiters = survivors;
@@ -179,15 +184,9 @@ export class CodexAppServerClient {
   }
 
   #failAll(error) {
-    for (const pending of this.pending.values()) {
-      clearTimeout(pending.timer);
-      pending.reject(error);
-    }
+    for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(error); }
     this.pending.clear();
-    for (const waiter of this.notificationWaiters) {
-      clearTimeout(waiter.timer);
-      waiter.reject(error);
-    }
+    for (const waiter of this.notificationWaiters) { clearTimeout(waiter.timer); waiter.reject(error); }
     this.notificationWaiters = [];
   }
 }

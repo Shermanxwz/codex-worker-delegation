@@ -1,15 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { evaluateTool } from '../src/policy.mjs';
-
-test('DELEGATE makes root coordination-only but allows subagent body work',()=>{
-  assert.equal(evaluateTool({mode:'DELEGATE',toolName:'exec_command'}).allow,false);
-  assert.equal(evaluateTool({mode:'DELEGATE',toolName:'spawn_agent'}).allow,true);
-  assert.equal(evaluateTool({mode:'DELEGATE',toolName:'exec_command',agentId:'child'}).allow,true);
-});
-test('MAIN blocks spawning and freezes existing subagents',()=>{
-  assert.equal(evaluateTool({mode:'MAIN',toolName:'exec_command'}).allow,true);
-  assert.equal(evaluateTool({mode:'MAIN',toolName:'spawn_agent'}).allow,false);
-  assert.equal(evaluateTool({mode:'MAIN',toolName:'exec_command',agentType:'worker'}).allow,false);
-});
-test('unknown mode fails closed',()=>assert.equal(evaluateTool({mode:'???',toolName:'read'}).allow,false));
+import { evaluateTool, executionPlan } from '../src/policy.mjs';
+const routing={AUTO:{main:{provider:'official',model:'o'},worker:{provider:'third_party',model:'t'},verifier:{provider:'official',model:'v'}},DELEGATE:{main:{provider:'official',model:'o'},worker:{provider:'third_party',model:'t'},verifier:{provider:'official',model:'v'}},MAIN:{main:{provider:'official',model:'o'},worker:{provider:'official',model:'o'},verifier:{provider:'official',model:'o'}}};
+test('DELEGATE makes root coordination-only but allows subagent body work',()=>{assert.equal(evaluateTool({mode:'DELEGATE',toolName:'exec_command',state:{routing}}).allow,false);assert.equal(evaluateTool({mode:'DELEGATE',toolName:'spawn_agent',toolInput:{agent_type:'cwd-verifier'},state:{routing}}).allow,true);assert.equal(evaluateTool({mode:'DELEGATE',toolName:'exec_command',agentId:'child',state:{routing}}).allow,true)});
+test('native spawn is blocked when selected route involves third-party provider',()=>{const r=evaluateTool({mode:'DELEGATE',toolName:'spawn_agent',toolInput:{agent_type:'cwd-worker'},state:{routing}});assert.equal(r.allow,false);assert.match(r.reason,/delegate_worker/);assert.equal(executionPlan(routing.DELEGATE.main,routing.DELEGATE.worker).execution,'cross_provider_thread')});
+test('AUTO applies the same provider-route safety check before normal orchestration',()=>assert.equal(evaluateTool({mode:'AUTO',toolName:'Agent',toolInput:{agent_type:'cwd-worker'},state:{routing}}).allow,false));
+test('MAIN blocks spawning and freezes existing subagents',()=>{assert.equal(evaluateTool({mode:'MAIN',toolName:'exec_command',state:{routing}}).allow,true);assert.equal(evaluateTool({mode:'MAIN',toolName:'spawn_agent',state:{routing}}).allow,false);assert.equal(evaluateTool({mode:'MAIN',toolName:'exec_command',agentType:'worker',state:{routing}}).allow,false)});
+test('unknown mode fails closed',()=>assert.equal(evaluateTool({mode:'???',toolName:'read',state:{routing}}).allow,false));

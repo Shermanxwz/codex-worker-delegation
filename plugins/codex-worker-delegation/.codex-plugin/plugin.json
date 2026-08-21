@@ -1,20 +1,20 @@
 {
   "name": "codex-worker-delegation",
-  "version": "2.0.0",
-  "description": "Native Codex delegation and cross-provider model coexistence for ChatGPT Linux.",
+  "version": "3.0.0",
+  "description": "Codex-native delegation and verified multi-provider coexistence for ChatGPT Linux.",
   "author": {"name": "Shermanxwz", "url": "https://github.com/Shermanxwz"},
   "repository": "https://github.com/Shermanxwz/codex-worker-delegation",
   "license": "MIT",
-  "keywords": ["chatgpt-linux", "codex", "subagents", "delegation", "responses", "multi-model"],
+  "keywords": ["chatgpt-linux", "codex", "subagents", "delegation", "responses", "multi-model", "new-api"],
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Codex Worker Delegation",
-    "shortDescription": "Native and cross-provider Codex workers",
-    "longDescription": "Control Codex native subagents and cross-provider worker threads from a local Web panel while keeping official ChatGPT authentication isolated from third-party model routing.",
+    "shortDescription": "Verified Codex multi-provider workers",
+    "longDescription": "Control per-role provider/model routing from a local Web panel while preserving official ChatGPT authentication. Built-in OpenAI routes may use native subagents; third-party routes use explicit App Server threads to avoid current custom-provider subagent transport defects.",
     "developerName": "Shermanxwz",
     "category": "Developer Tools",
     "capabilities": ["Interactive", "Write"],
-    "defaultPrompt": ["Read the current delegation status before substantial work.", "Use native subagents for same-provider workers and delegate_worker for cross-provider workers."]
+    "defaultPrompt": ["Read delegation_status before substantial work.", "Use native subagents only for built-in OpenAI-to-OpenAI routes; use delegate_worker for any route involving a third-party provider."]
   }
 }

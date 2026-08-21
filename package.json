@@ -1,9 +1,9 @@
 {
   "name": "codex-worker-delegation",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "private": true,
   "type": "module",
-  "description": "Native Codex delegation control plane for ChatGPT Linux with official/third-party model coexistence and Responses compatibility bridging.",
+  "description": "Native Codex delegation control plane for ChatGPT Linux with verified official/third-party coexistence and per-model Responses compatibility bridging.",
   "engines": {"node": ">=20"},
   "scripts": {
     "start": "node src/server.mjs",
@@ -11,6 +11,6 @@
     "check": "node scripts/check.mjs",
     "doctor": "node src/cli.mjs doctor",
     "install:codex": "node src/cli.mjs install",
-    "restore:official": "node src/cli.mjs official"
+    "official:status": "node src/cli.mjs official"
   }
 }

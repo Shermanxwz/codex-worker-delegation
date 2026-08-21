@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { CodexAppServerClient, codexBinaryCandidates } from '../src/app-server.mjs';
+import { CodexAppServerClient, codexBinaryCandidates, normalizeSandboxMode } from '../src/app-server.mjs';
 
 async function fakeCodex(t) {
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'cwd-appserver-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));
@@ -14,11 +14,9 @@ async function fakeCodex(t) {
 }
 
 test('Linux discovery includes Codex bundled by the official ChatGPT deb',()=>{const candidates=codexBinaryCandidates({HOME:'/home/test'});assert.equal(candidates[0],'/usr/lib/chatgpt/resources/codex');assert.ok(candidates.includes('/home/test/.local/bin/codex'))});
-
 test('explicit binary override takes priority over desktop and PATH candidates',()=>{const candidates=codexBinaryCandidates({HOME:'/home/test',CODEX_CLI_PATH:'/custom/codex'});assert.equal(candidates[0],'/custom/codex');assert.equal(candidates[1],'/usr/lib/chatgpt/resources/codex')});
+test('sandbox aliases normalize to current App Server enum values',()=>{assert.equal(normalizeSandboxMode('workspace-write'),'workspaceWrite');assert.equal(normalizeSandboxMode('read-only'),'readOnly');assert.equal(normalizeSandboxMode('workspaceWrite'),'workspaceWrite');assert.throws(()=>normalizeSandboxMode('wat'),/Unsupported Codex sandbox mode/)});
 
 test('account/read exposes the existing official ChatGPT login without changing it',async(t)=>{const fake=await fakeCodex(t);const c=new CodexAppServerClient({binary:fake.script,env:fake.env,timeoutMs:2000});await c.start();t.after(()=>c.close());const account=await c.getAccount();assert.deepEqual(account,{account:{type:'chatgpt',email:'user@example.com',planType:'plus'},requiresOpenaiAuth:true});const lines=(await fs.readFile(fake.log,'utf8')).trim().split('\n').map(JSON.parse);assert.equal(lines.find(x=>x.method==='account/read').params.refreshToken,false)});
-
 test('model/list is read from real app-server protocol surface',async(t)=>{const fake=await fakeCodex(t);const c=new CodexAppServerClient({binary:fake.script,env:fake.env,timeoutMs:2000});await c.start();t.after(()=>c.close());const models=await c.listModels();assert.equal(models[0].model,'official-a')});
-
-test('cross-provider thread/start sends explicit modelProvider and returns completed agent message',async(t)=>{const fake=await fakeCodex(t);const c=new CodexAppServerClient({binary:fake.script,env:fake.env,timeoutMs:2000});await c.start();t.after(()=>c.close());const r=await c.runThread({model:'third-x',modelProvider:'codex_worker_gateway',prompt:'do work',cwd:'/tmp',timeoutMs:3000});assert.equal(r.output,'APP_SERVER_OK');assert.equal(r.modelProvider,'codex_worker_gateway');const lines=(await fs.readFile(fake.log,'utf8')).trim().split('\n').map(JSON.parse);const start=lines.find(x=>x.method==='thread/start');assert.equal(start.params.modelProvider,'codex_worker_gateway');assert.equal(start.params.model,'third-x')});
+test('cross-provider thread/start sends explicit modelProvider, current sandbox enum and serviceName',async(t)=>{const fake=await fakeCodex(t);const c=new CodexAppServerClient({binary:fake.script,env:fake.env,timeoutMs:2000});await c.start();t.after(()=>c.close());const r=await c.runThread({model:'third-x',modelProvider:'codex_worker_gateway',prompt:'do work',cwd:'/tmp',sandbox:'read-only',timeoutMs:3000});assert.equal(r.output,'APP_SERVER_OK');assert.equal(r.modelProvider,'codex_worker_gateway');const lines=(await fs.readFile(fake.log,'utf8')).trim().split('\n').map(JSON.parse);const start=lines.find(x=>x.method==='thread/start');assert.equal(start.params.modelProvider,'codex_worker_gateway');assert.equal(start.params.model,'third-x');assert.equal(start.params.sandbox,'readOnly');assert.equal(start.params.serviceName,'codex-worker-delegation')});

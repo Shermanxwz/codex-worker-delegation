@@ -7,8 +7,10 @@ import { StateStore, publicState, activeRouting } from './store.mjs';
 import { SecretVault } from './vault.mjs';
 import { ResponsesGateway } from './gateway.mjs';
 import { probeProvider, listProviderModels } from './provider.mjs';
-import { CodexConfigManager, CODEX_GATEWAY_PROVIDER_ID } from './codex-config.mjs';
+import { CodexConfigManager, CODEX_GATEWAY_PROVIDER_ID, inspectTopLevel, sameTopLevelSelectors } from './codex-config.mjs';
 import { withCodexAppServer, resolveCodexBinary } from './app-server.mjs';
+import { executionPlan } from './policy.mjs';
+export { executionPlan } from './policy.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const contentTypes = { '.html':'text/html; charset=utf-8', '.js':'text/javascript; charset=utf-8', '.css':'text/css; charset=utf-8', '.svg':'image/svg+xml' };
@@ -36,7 +38,7 @@ export function createApp({ env = process.env, fetchImpl = fetch } = {}) {
       if (url.pathname.startsWith('/api/')) {
         if (!authorizeUi(req, env, host)) return sendJson(res, 401, { error: 'unauthorized' });
         if (req.method === 'GET' && url.pathname === '/api/state') return sendJson(res, 200, publicState(await store.read()));
-        if (req.method === 'GET' && url.pathname === '/api/health') return sendJson(res, 200, { ok: true, version: '2.0.0', host, port, codexBinary: resolveCodexBinary(env) });
+        if (req.method === 'GET' && url.pathname === '/api/health') return sendJson(res, 200, { ok: true, version: '3.0.0', host, port, codexBinary: resolveCodexBinary(env) });
         if (req.method === 'GET' && url.pathname === '/api/catalog') return sendJson(res, 200, await loadCatalog({ store, vault, env, fetchImpl }));
         if (req.method === 'PUT' && url.pathname === '/api/mode') {
           const { mode } = await readJson(req);
@@ -55,10 +57,7 @@ export function createApp({ env = process.env, fetchImpl = fetch } = {}) {
               ...s.routing[mode],
               ...Object.fromEntries(Object.entries(body.roles).map(([name, value]) => [name, { provider: value.provider, model: String(value.model || '').trim() }]))
             };
-            if (mode === s.mode) {
-              s.models = { main: s.routing[mode].main.model, worker: s.routing[mode].worker.model, verifier: s.routing[mode].verifier.model };
-              s.mainSource = s.routing[mode].main.provider === 'third_party' ? 'third_party' : 'official';
-            }
+            if (mode === s.mode) s.models = { main: s.routing[mode].main.model, worker: s.routing[mode].worker.model, verifier: s.routing[mode].verifier.model };
             return s;
           });
           await store.audit('routing.changed', { mode, roles: body.roles });
@@ -76,7 +75,7 @@ export function createApp({ env = process.env, fetchImpl = fetch } = {}) {
         }
         if (req.method === 'POST' && url.pathname === '/api/provider/probe') {
           const state = await store.read(); if (!state.provider) return sendJson(res, 400, { error: 'configure provider first' });
-          const body = await readJson(req); const selected = body.model || activeRouting(state).worker.model || activeRouting(state).main.model;
+          const body = await readJson(req); const selected = body.model || firstThirdPartyModel(state) || activeRouting(state).worker.model || activeRouting(state).main.model;
           if (!selected) return sendJson(res, 400, { error: 'model is required' });
           const apiKey = await vault.decrypt(state.provider.apiKeyCipher);
           const result = await probeProvider({ baseUrl: state.provider.baseUrl, apiKey, model: selected, fetchImpl, extraHeaders: state.provider.headers });
@@ -87,15 +86,13 @@ export function createApp({ env = process.env, fetchImpl = fetch } = {}) {
         if (req.method === 'POST' && url.pathname === '/api/codex/install') {
           await store.ensureGatewayToken();
           const snap = await codex.install();
-          const next = await store.update((s) => { if (!s.originalTopLevel) s.originalTopLevel = snap.originalTopLevel; s.installed = true; return s; });
-          await store.audit('codex.installed', { providerId: snap.providerId, agents: snap.agents });
+          const next = await store.update((s) => { s.installed = true; return s; });
+          await store.audit('codex.installed', { providerId: snap.providerId, agents: snap.agents, topLevelPreserved: snap.topLevelPreserved });
           return sendJson(res, 200, publicState(next));
         }
-        if (req.method === 'POST' && url.pathname === '/api/codex/official') {
-          const state = await store.read(); await codex.restoreOfficial(state.originalTopLevel || {});
-          const next = await store.update((s) => { s.mainSource = 'official'; return s; });
-          await store.audit('codex.global_selector.restored');
-          return sendJson(res, 200, publicState(next));
+        if (req.method === 'POST' && url.pathname === '/api/verify/coexistence') {
+          const body = await readJson(req);
+          return sendJson(res, 200, await verifyCoexistence({ body, store, codex, env }));
         }
         if (req.method === 'POST' && url.pathname === '/api/worker/run') return sendJson(res, 200, await executeWorker(await readJson(req), { store, env }));
         return sendJson(res, 404, { error: 'not found' });
@@ -134,11 +131,11 @@ async function executeWorker(body, { store, env }) {
   const route = routes[roleName];
   const main = routes.main;
   if (!route?.model) throw new Error(`${mode}.${roleName} model is not configured`);
-  if (route.provider === main.provider) {
+  const plan = executionPlan(main, route, roleName);
+  if (plan.execution === 'native_subagent_required') {
     return {
-      execution: 'native_subagent_required', mode, role: roleName, provider: route.provider, model: route.model,
-      agentType: roleName === 'verifier' ? 'cwd-verifier' : 'cwd-worker',
-      instruction: `Use Codex native spawn_agent with agent_type=${roleName === 'verifier' ? 'cwd-verifier' : 'cwd-worker'} and model=${route.model}; Main and ${roleName} use the same provider.`
+      ...plan, mode, role: roleName, provider: route.provider, model: route.model,
+      instruction: `Use Codex native spawn_agent with agent_type=${plan.agentType} and model=${route.model}. This route stays on the built-in OpenAI provider.`
     };
   }
   if (route.provider === 'third_party' && !state.installed) throw new Error('install/refresh Codex integration before using third-party threads');
@@ -147,19 +144,65 @@ async function executeWorker(body, { store, env }) {
     modelProvider: route.provider === 'third_party' ? CODEX_GATEWAY_PROVIDER_ID : 'openai',
     prompt: body.task,
     cwd: body.cwd || process.cwd(),
-    sandbox: roleName === 'verifier' ? 'read-only' : (body.sandbox || 'workspace-write'),
+    sandbox: roleName === 'verifier' ? 'readOnly' : (body.sandbox || 'workspaceWrite'),
     developerInstructions: roleName === 'verifier' ? 'Verify independently. Prefer inspection and tests; do not modify implementation files.' : 'Execute the assigned implementation task and report concrete results.'
   }), { env });
-  await store.audit('worker.completed', { mode, role: roleName, provider: route.provider, model: route.model, threadId: result.threadId });
-  return { execution: 'cross_provider_thread', mode, role: roleName, provider: route.provider, ...result };
+  await store.audit('worker.completed', { mode, role: roleName, provider: route.provider, model: route.model, execution: plan.execution, threadId: result.threadId });
+  return { ...plan, mode, role: roleName, provider: route.provider, model: route.model, ...result };
 }
+
+async function verifyCoexistence({ body, store, codex, env }) {
+  const state = await store.read();
+  if (!state.provider) throw new Error('configure New API before coexistence verification');
+  if (!state.installed) throw new Error('install/refresh Codex integration before coexistence verification');
+  const model = String(body.model || firstThirdPartyModel(state) || '').trim();
+  if (!model) throw new Error('select at least one third-party model before coexistence verification');
+  const selectorsBefore = inspectTopLevel(await codex.read());
+  const proof = await withCodexAppServer(async (client) => {
+    const before = await client.getAccount({ refreshToken: false });
+    const thread = await client.runThread({
+      model,
+      modelProvider: CODEX_GATEWAY_PROVIDER_ID,
+      prompt: 'Reply with exactly CWD_COEXISTENCE_OK. Do not use tools.',
+      cwd: body.cwd || process.cwd(),
+      sandbox: 'readOnly',
+      developerInstructions: 'This is a read-only provider coexistence probe. Do not use tools or modify files; answer only with the requested marker.',
+      timeoutMs: Number(body.timeoutMs || 120000)
+    });
+    const after = await client.getAccount({ refreshToken: false });
+    return { before, thread, after };
+  }, { env });
+  const selectorsAfter = inspectTopLevel(await codex.read());
+  const officialBefore = proof.before?.account?.type === 'chatgpt';
+  const officialAfter = proof.after?.account?.type === 'chatgpt';
+  const selectorStable = sameTopLevelSelectors(selectorsBefore, selectorsAfter);
+  const thirdPartyThreadOk = proof.thread?.status === 'completed' && Boolean(proof.thread?.output?.trim());
+  const markerObserved = proof.thread?.output?.includes('CWD_COEXISTENCE_OK') || false;
+  const result = {
+    ok: officialBefore && officialAfter && selectorStable && thirdPartyThreadOk,
+    officialChatGPTBefore: summarizeAccount(proof.before),
+    officialChatGPTAfter: summarizeAccount(proof.after),
+    thirdParty: { model, modelProvider: CODEX_GATEWAY_PROVIDER_ID, threadId: proof.thread?.threadId || null, status: proof.thread?.status || null, markerObserved },
+    globalSelectorUntouched: selectorStable,
+    selectorsBefore: publicSelectors(selectorsBefore),
+    selectorsAfter: publicSelectors(selectorsAfter),
+    proof: 'A third-party App Server thread completed between two account/read checks while the top-level official selector stayed byte-equivalent at the parsed selector level.'
+  };
+  await store.audit('coexistence.verified', { ok: result.ok, model, markerObserved, officialBefore, officialAfter, selectorStable });
+  return result;
+}
+
+function firstThirdPartyModel(state) {
+  const routes = activeRouting(state);
+  for (const roleName of ['worker', 'verifier', 'main']) if (routes[roleName]?.provider === 'third_party' && routes[roleName]?.model) return routes[roleName].model;
+  return '';
+}
+function summarizeAccount(result) { const a = result?.account || null; return a ? { type: a.type || null, planType: a.planType || null, email: a.email || null, requiresOpenaiAuth: result?.requiresOpenaiAuth ?? null } : { type: null, planType: null, email: null, requiresOpenaiAuth: result?.requiresOpenaiAuth ?? null }; }
+function publicSelectors(value = {}) { return Object.fromEntries(['model_provider','model'].filter((k)=>value[k]?.raw).map((k)=>[k,value[k].raw])); }
 
 async function loadCatalog({ store, vault, env, fetchImpl }) {
   const state = await store.read();
-  const result = {
-    official: { ok: false, models: [], account: null, requiresOpenaiAuth: null, error: null },
-    thirdParty: { ok: false, models: [], configured: Boolean(state.provider), error: null }
-  };
+  const result = { official: { ok: false, models: [], account: null, requiresOpenaiAuth: null, error: null }, thirdParty: { ok: false, models: [], configured: Boolean(state.provider), error: null } };
   try {
     const official = await withCodexAppServer(async (client) => {
       const [models, account] = await Promise.all([client.listModels(), client.getAccount({ refreshToken: false })]);

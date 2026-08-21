@@ -1,62 +1,11 @@
 <!doctype html>
 <html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Codex Worker Delegation</title>
-  <link rel="stylesheet" href="/styles.css">
-</head>
-<body>
-<main>
-  <header>
-    <div>
-      <p class="eyebrow">CHATGPT LINUX · CODEX NATIVE CONTROL PLANE</p>
-      <h1>Codex Worker Delegation</h1>
-      <p class="lead">官方 ChatGPT 登录与 New API 第三方模型同时存在。Web 端明确选择 Main / Worker / Verifier 的 provider 与模型；同 provider 使用 Codex Native Subagent，跨 provider 使用 Codex App Server Thread。</p>
-    </div>
-    <span id="health" class="pill">loading</span>
-  </header>
-
-  <section class="card">
-    <div class="section-head"><div><h2>运行模式</h2><p class="muted">切模式不会改登录，也不会替换全局 OpenAI provider。</p></div></div>
-    <div class="modes"><button data-mode="AUTO">AUTO</button><button data-mode="DELEGATE">DELEGATE</button><button data-mode="MAIN">MAIN</button></div>
-    <p id="modeHelp" class="muted"></p>
-  </section>
-
-  <section class="card">
-    <div class="section-head"><div><h2>Provider 共存状态</h2><p class="muted">直接读取 Codex <code>account/read</code> 与 New API 状态。两边是独立凭证，不是二选一开关。</p></div><button id="refreshCatalog" class="secondary">刷新状态 / 模型</button></div>
-    <div class="coexist-grid">
-      <div class="provider-status"><span class="status-dot" id="officialDot"></span><div><b>Official ChatGPT</b><div id="officialState" class="muted">检测中…</div></div></div>
-      <div class="provider-status"><span class="status-dot" id="thirdDot"></span><div><b>New API</b><div id="thirdState" class="muted">检测中…</div></div></div>
-      <div class="provider-status coexist-summary"><span class="status-dot" id="coexistDot"></span><div><b>共存验证</b><div id="coexistState" class="muted">检测中…</div></div></div>
-    </div>
-  </section>
-
-  <section class="card">
-    <div class="section-head"><div><h2>New API / 第三方模型</h2><p class="muted">API Key 仅写入本项目加密 vault；Codex 只拿本地 gateway token，不修改 ChatGPT OAuth/auth.json。</p></div></div>
-    <div class="grid">
-      <label>Base URL<input id="baseUrl" placeholder="https://api.example.com/v1"></label>
-      <label>API Key<input id="apiKey" type="password" autocomplete="new-password" placeholder="只在首次或更换时填写"></label>
-      <label>协议<select id="protocol"><option value="auto">Auto：先 /responses，再按需回退 Chat Completions</option><option value="responses">Responses</option><option value="chat">Chat Completions bridge</option></select></label>
-    </div>
-    <div class="actions"><button id="saveProvider">保存 New API</button><button id="probe" class="secondary">探测当前 Worker 协议</button></div>
-    <pre id="probeResult" class="compact"></pre>
-  </section>
-
-  <section class="card">
-    <div class="section-head"><div><h2>模型路由</h2><p class="muted">每个模式、每个位置都可独立选择。模型目录来自当前 Codex <code>model/list</code> 与 New API <code>/v1/models</code>。</p></div><button id="saveRouting">保存全部路由</button></div>
-    <div id="routing"></div>
-    <div class="legend"><span><b>Native Subagent</b>：Main 与 Worker provider 相同</span><span><b>Cross-provider Thread</b>：provider 不同</span></div>
-  </section>
-
-  <section class="card">
-    <div class="section-head"><div><h2>Codex 原生集成</h2><p class="muted">写入 namespaced <code>codex_worker_gateway</code> provider，并安装当前 Codex 自动发现的 <code>~/.codex/agents/*.toml</code> roles；不覆盖官方登录。</p></div><button id="install">安装 / 刷新</button></div>
-    <div class="test-grid"><label>测试任务<textarea id="testTask" rows="4">检查当前项目并只返回一行：WORKER_ROUTE_OK</textarea></label><label>测试角色<select id="testRole"><option value="worker">Worker</option><option value="verifier">Verifier</option></select></label></div>
-    <div class="actions"><button id="runWorker" class="secondary">真实运行当前模式路由</button></div>
-    <pre id="runResult"></pre>
-    <pre id="status"></pre>
-  </section>
-</main>
-<script type="module" src="/app.js"></script>
-</body>
-</html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Codex Worker Delegation</title><link rel="stylesheet" href="/styles.css"></head>
+<body><main>
+<header><div><p class="eyebrow">CHATGPT LINUX · CODEX NATIVE CONTROL PLANE</p><h1>Codex Worker Delegation</h1><p class="lead">官方 ChatGPT 登录与 New API 第三方模型真正并存。Web 端明确选择 Main / Worker / Verifier 的 provider 与模型；官方→官方使用 Codex Native Subagent，任何涉及第三方 provider 的 delegated work 默认使用显式 App Server 隔离线程。</p></div><span id="health" class="pill">loading</span></header>
+<section class="card"><div class="section-head"><div><h2>运行模式</h2><p class="muted">切模式只切本项目路由，不改 ChatGPT 登录，也不替换全局 OpenAI provider。</p></div></div><div class="modes"><button data-mode="AUTO">AUTO</button><button data-mode="DELEGATE">DELEGATE</button><button data-mode="MAIN">MAIN</button></div><p id="modeHelp" class="muted"></p></section>
+<section class="card"><div class="section-head"><div><h2>Provider 共存状态</h2><p class="muted">读取 Codex <code>account/read</code> 与 New API 模型状态；“真实共存验收”会在两次 ChatGPT account/read 之间实际跑一个第三方 <code>thread/start(modelProvider=codex_worker_gateway)</code>，并确认顶层 selector 未变化。</p></div><div class="actions"><button id="refreshCatalog" class="secondary">刷新状态 / 模型</button><button id="verifyCoexistence">真实共存验收</button></div></div><div class="coexist-grid"><div class="provider-status"><span class="status-dot" id="officialDot"></span><div><b>Official ChatGPT</b><div id="officialState" class="muted">检测中…</div></div></div><div class="provider-status"><span class="status-dot" id="thirdDot"></span><div><b>New API</b><div id="thirdState" class="muted">检测中…</div></div></div><div class="provider-status coexist-summary"><span class="status-dot" id="coexistDot"></span><div><b>共存证明</b><div id="coexistState" class="muted">检测中…</div></div></div></div><pre id="coexistProof" class="compact"></pre></section>
+<section class="card"><div class="section-head"><div><h2>New API / 第三方模型</h2><p class="muted">API Key 只写入本项目 AES-256-GCM vault；Codex 只拿本地 gateway token，不修改 ChatGPT OAuth/auth.json。Base URL 可填服务根、<code>/v1</code>、<code>/v1/responses</code>、<code>/v1/chat/completions</code> 或 <code>/v1/models</code>，会自动归一。</p></div></div><div class="grid"><label>Base URL<input id="baseUrl" placeholder="https://api.example.com/v1"></label><label>API Key<input id="apiKey" type="password" autocomplete="new-password" placeholder="只在首次或更换时填写"></label><label>协议<select id="protocol"><option value="auto">Auto：按模型先 /responses，只有端点确实不支持才回退 Chat Completions</option><option value="responses">Responses</option><option value="chat">Chat Completions bridge</option></select></label></div><div class="actions"><button id="saveProvider">保存 New API</button><button id="probe" class="secondary">探测当前第三方模型协议</button></div><pre id="probeResult" class="compact"></pre></section>
+<section class="card"><div class="section-head"><div><h2>模型路由</h2><p class="muted">每个模式、每个位置独立选择 provider + model。Official 列表来自当前 Codex <code>model/list</code>；第三方来自 New API <code>/v1/models</code>，无目录时仍可手填模型 ID。</p></div><button id="saveRouting">保存全部路由</button></div><div id="routing"></div><div class="legend"><span><b>Native Subagent</b>：仅 built-in OpenAI → built-in OpenAI</span><span><b>Provider-isolated Thread</b>：第三方同 provider 也用隔离线程，规避当前 Codex custom-provider subagent 传输缺陷</span><span><b>Cross-provider Thread</b>：Main / Worker provider 不同</span></div></section>
+<section class="card"><div class="section-head"><div><h2>Codex 原生集成</h2><p class="muted">只注册 namespaced <code>codex_worker_gateway</code> 和自动发现的 <code>~/.codex/agents/*.toml</code> roles。command-backed auth 与官方 OpenAI auth 完全分离，不修改顶层 <code>model_provider/model</code>。</p></div><button id="install">安装 / 刷新</button></div><div class="test-grid"><label>测试任务<textarea id="testTask" rows="4">检查当前项目并只返回一行：WORKER_ROUTE_OK</textarea></label><label>测试角色<select id="testRole"><option value="worker">Worker</option><option value="verifier">Verifier</option></select></label></div><div class="actions"><button id="runWorker" class="secondary">真实运行当前模式路由</button></div><pre id="runResult"></pre><pre id="status"></pre></section>
+</main><script type="module" src="/app.js"></script></body></html>
