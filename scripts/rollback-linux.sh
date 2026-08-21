@@ -4,8 +4,6 @@ INSTALL_ROOT="${CWD_INSTALL_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/codex-wor
 CURRENT="$INSTALL_ROOT/current"
 PREVIOUS="$INSTALL_ROOT/previous"
 SWAP="$INSTALL_ROOT/.rollback-swap"
-SYSTEMD_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-SERVICE_FILE="$SYSTEMD_DIR/codex-worker-delegation.service"
 RECORD="$INSTALL_ROOT/install-record.json"
 PORT="${CWD_PORT:-8788}"
 NODE_BIN="${CWD_NODE_BIN:-$(command -v node || true)}"
@@ -36,7 +34,7 @@ restore_after_failure(){
   if (( status != 0 )); then
     echo "Rollback validation failed; restoring release $CURRENT_ID." >&2
     swap_releases || true
-    if [[ -f "$CURRENT/deploy/codex-worker-delegation.service" ]]; then install -m 600 "$CURRENT/deploy/codex-worker-delegation.service" "$SERVICE_FILE" || true; fi
+    if [[ -d "$CURRENT" ]]; then CWD_RELEASE_ROOT="$CURRENT" CWD_NODE_BIN="$NODE_BIN" bash "$CURRENT/scripts/install-service-unit.sh" >/dev/null 2>&1 || true; fi
     if [[ "${CWD_INSTALL_NO_SYSTEMD:-0}" != "1" ]]; then systemctl --user daemon-reload >/dev/null 2>&1 || true; systemctl --user restart codex-worker-delegation.service >/dev/null 2>&1 || true; fi
     if [[ "${CWD_INSTALL_NO_PLUGIN:-0}" != "1" ]]; then (cd "$CURRENT" && bash scripts/install.sh) >/dev/null 2>&1 || true; fi
   fi
@@ -45,7 +43,7 @@ restore_after_failure(){
 trap restore_after_failure ERR
 
 swap_releases
-install -m 600 "$CURRENT/deploy/codex-worker-delegation.service" "$SERVICE_FILE"
+CWD_RELEASE_ROOT="$CURRENT" CWD_NODE_BIN="$NODE_BIN" bash "$CURRENT/scripts/install-service-unit.sh"
 if [[ "${CWD_INSTALL_NO_SYSTEMD:-0}" != "1" ]]; then
   systemctl --user daemon-reload
   systemctl --user restart codex-worker-delegation.service
