@@ -12,8 +12,8 @@ jobs:
         node: [20, 22, 24]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with: {node-version: "${{ matrix.node }}"}
       - run: npm run check
       - run: npm test
@@ -21,8 +21,8 @@ jobs:
   codex-smoke:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with: {node-version: "22"}
       - run: npm run check
       - name: Install current official Codex package
@@ -41,8 +41,8 @@ jobs:
   deployment-contract:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with: {node-version: "22"}
       - name: Install current official Codex package
         run: npm install --no-save @openai/codex
@@ -76,22 +76,78 @@ jobs:
           test "$auth_before" = "$auth_after"
           ! grep -q 'codex_worker_gateway' "$CODEX_HOME/config.toml"
 
-  chatgpt-linux-package:
+  chatgpt-linux-baseline:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with: {node-version: "22"}
-      - name: Download official ChatGPT Linux deb
+      - name: Load immutable ChatGPT Linux baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE' >> "$GITHUB_ENV"
+          const fs = require('fs');
+          const b = JSON.parse(fs.readFileSync('deploy/chatgpt-linux-baseline.json', 'utf8'));
+          console.log(`BASELINE_URL=${b.package.versionedUrl}`);
+          console.log(`BASELINE_SHA256=${b.package.sha256}`);
+          console.log(`BASELINE_VERSION=${b.package.version}`);
+          console.log(`BASELINE_CODEX_VERSION=${b.bundledCodex.version}`);
+          NODE
+      - name: Download and verify immutable ChatGPT Linux baseline
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 --retry-delay 2 "$BASELINE_URL" --output /tmp/chatgpt_baseline.deb
+          echo "$BASELINE_SHA256  /tmp/chatgpt_baseline.deb" | sha256sum --check --strict
+          test "$(dpkg-deb -f /tmp/chatgpt_baseline.deb Version)" = "$BASELINE_VERSION"
+          {
+            echo "url=$BASELINE_URL"
+            echo "sha256=$BASELINE_SHA256"
+            dpkg-deb --info /tmp/chatgpt_baseline.deb
+          } | tee /tmp/chatgpt-baseline-evidence.txt
+      - name: Execute bundled baseline Codex and generate App Server schema
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/chatgpt-baseline-root /tmp/chatgpt-baseline-schema
+          mkdir -p /tmp/chatgpt-baseline-root
+          dpkg-deb --extract /tmp/chatgpt_baseline.deb /tmp/chatgpt-baseline-root
+          BUNDLED=/tmp/chatgpt-baseline-root/usr/lib/chatgpt/resources/codex
+          test -x "$BUNDLED"
+          actual="$($BUNDLED --version)"
+          echo "$actual" | tee -a /tmp/chatgpt-baseline-evidence.txt
+          test "$actual" = "$BASELINE_CODEX_VERSION"
+          "$BUNDLED" app-server generate-json-schema --out /tmp/chatgpt-baseline-schema
+          test -n "$(find /tmp/chatgpt-baseline-schema -type f -print -quit)"
+          echo "BASELINE_BUNDLED_CODEX=$BUNDLED" >> "$GITHUB_ENV"
+      - name: Real E2E through immutable bundled Codex baseline
+        env:
+          CODEX_BIN: ${{ env.BASELINE_BUNDLED_CODEX }}
+        run: node scripts/real-codex-e2e.mjs | tee -a /tmp/chatgpt-baseline-evidence.txt
+      - name: Upload immutable baseline evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt-linux-baseline-evidence-${{ github.run_id }}
+          path: /tmp/chatgpt-baseline-evidence.txt
+          if-no-files-found: error
+          retention-days: 90
+
+  chatgpt-linux-latest:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: {node-version: "22"}
+      - name: Download current official ChatGPT Linux deb
         run: |
           set -euo pipefail
           curl --fail --location --retry 3 --retry-delay 2 \
             https://persistent.oaistatic.com/codex-app-prod/linux/deb/latest/chatgpt_amd64.deb \
             --output /tmp/chatgpt_amd64.deb
           test -s /tmp/chatgpt_amd64.deb
-          sha256sum /tmp/chatgpt_amd64.deb | tee /tmp/chatgpt-package-metadata.txt
-          dpkg-deb --info /tmp/chatgpt_amd64.deb | tee -a /tmp/chatgpt-package-metadata.txt
-      - name: Extract official Linux package and execute bundled Codex
+          sha256sum /tmp/chatgpt_amd64.deb | tee /tmp/chatgpt-latest-evidence.txt
+          dpkg-deb --info /tmp/chatgpt_amd64.deb | tee -a /tmp/chatgpt-latest-evidence.txt
+      - name: Execute current bundled Codex and generate App Server schema
         run: |
           set -euo pipefail
           rm -rf /tmp/chatgpt-root /tmp/chatgpt-schema
@@ -99,23 +155,23 @@ jobs:
           dpkg-deb --extract /tmp/chatgpt_amd64.deb /tmp/chatgpt-root
           BUNDLED=/tmp/chatgpt-root/usr/lib/chatgpt/resources/codex
           test -x "$BUNDLED"
-          "$BUNDLED" --version | tee -a /tmp/chatgpt-package-metadata.txt
+          "$BUNDLED" --version | tee -a /tmp/chatgpt-latest-evidence.txt
           "$BUNDLED" app-server generate-json-schema --out /tmp/chatgpt-schema
           test -n "$(find /tmp/chatgpt-schema -type f -print -quit)"
-          echo "BUNDLED_CODEX=$BUNDLED" >> "$GITHUB_ENV"
-      - name: Real E2E through the Codex binary bundled in ChatGPT Linux
+          echo "LATEST_BUNDLED_CODEX=$BUNDLED" >> "$GITHUB_ENV"
+      - name: Real E2E through current ChatGPT Linux bundled Codex
         env:
-          CODEX_BIN: ${{ env.BUNDLED_CODEX }}
-        run: node scripts/real-codex-e2e.mjs
+          CODEX_BIN: ${{ env.LATEST_BUNDLED_CODEX }}
+        run: node scripts/real-codex-e2e.mjs | tee -a /tmp/chatgpt-latest-evidence.txt
       - name: Verify project discovery contract matches packaged path
         run: |
           grep -F "'/usr/lib/chatgpt/resources/codex'" src/app-server.mjs
           grep -F "CODEX_CLI_PATH" src/app-server.mjs
-      - name: Upload package seal evidence
+      - name: Upload latest compatibility evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: chatgpt-linux-package-evidence-${{ github.run_id }}
-          path: /tmp/chatgpt-package-metadata.txt
+          name: chatgpt-linux-latest-evidence-${{ github.run_id }}
+          path: /tmp/chatgpt-latest-evidence.txt
           if-no-files-found: error
           retention-days: 30
