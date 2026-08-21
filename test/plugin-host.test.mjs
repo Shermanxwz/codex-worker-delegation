@@ -16,7 +16,7 @@ async function tempDir(t) {
 }
 
 function hostEnv(extra = {}) {
-  return { ...process.env, PATH: '/usr/bin:/bin', CWD_NODE_PATH: process.execPath, ...extra };
+  return { ...process.env, PATH: '/usr/bin:/bin', CWD_NODE_PATH: process.execPath, CWD_HOOK_REQUIRE_CONTROL_PLANE: '0', ...extra };
 }
 
 function waitForLine(processHandle, predicate, timeoutMs = 3000) {
