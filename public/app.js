@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const PAGES = ['dashboard', 'security', 'provider', 'routing', 'connectivity', 'integration'];
+const PAGES = ['dashboard', 'login', 'security', 'provider', 'routing', 'connectivity', 'integration'];
 const MODES = ['AUTO', 'DELEGATE', 'MAIN'];
 const VISIBLE_ROLES = { AUTO: ['main'], DELEGATE: ['main', 'worker'], MAIN: ['main'] };
 const MODE_LABELS = { AUTO: 'AUTO', DELEGATE: 'WORKER', MAIN: 'MAIN' };
@@ -26,7 +26,7 @@ async function api(path, opts = {}) {
     if (response.status === 401 && path !== '/api/auth/status') {
       authState = { ...(authState || {}), configured: true, authenticated: false, required: true, minPasswordLength: 14 };
       renderAuth();
-      navigate('security');
+      navigate('login');
     }
     throw new Error(value?.error?.message || value?.error || response.statusText);
   }
@@ -62,7 +62,12 @@ function effortOptions(provider, model, current = 'auto') {
 
 function navigate(page) {
   const next = PAGES.includes(page) ? page : 'dashboard';
+  if (authState?.required && !authState.authenticated && next !== 'login' && !(next === 'security' && !authState.configured)) {
+    return navigate(authState.configured ? 'login' : 'security');
+  }
   currentPage = next;
+  const desiredHash = next === 'dashboard' ? '' : `#${next}`;
+  if (window.location.hash !== desiredHash) window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}${desiredHash}`);
   document.querySelectorAll('.page').forEach((node) => { node.hidden = node.dataset.page !== next; });
   document.querySelectorAll('.app-nav a[data-page-link]').forEach((node) => node.classList.toggle('active', node.dataset.pageLink === next));
   document.querySelectorAll('[data-page-link]').forEach((node) => node.setAttribute('aria-current', node.dataset.pageLink === next ? 'page' : 'false'));
@@ -73,8 +78,8 @@ function syncPage() { navigate((window.location.hash || '#dashboard').slice(1));
 
 function renderAuth() {
   if (!authState) return;
-  const setup = $('authSetup'); const login = $('authLogin'); const change = $('authChange');
-  setup.hidden = true; login.hidden = true; change.hidden = true;
+  const setup = $('authSetup'); const loginPage = $('loginPageForm'); const change = $('authChange');
+  setup.hidden = true; if (loginPage) loginPage.hidden = true; change.hidden = true;
   const configured = Boolean(authState.configured); const authenticated = Boolean(authState.authenticated);
   $('authMini').textContent = configured ? (authenticated ? '已登录' : '需登录') : (authState.required ? '需设置密码' : '未设置密码');
   $('authMini').classList.toggle('ok', configured && authenticated);
@@ -87,8 +92,8 @@ function renderAuth() {
   } else if (!authenticated) {
     $('authBadge').textContent = '需要登录';
     $('authPageStatus').textContent = '控制面已锁定';
-    $('authHint').textContent = '输入控制面密码后，才能访问 New API、路由、连通性和 Codex 集成页面。';
-    login.hidden = false;
+    $('authHint').textContent = '登录入口已独立到“登录控制面”页面；访问保护页只负责密码策略和已登录后的管理。';
+    if (loginPage) loginPage.hidden = false;
   } else {
     $('authBadge').textContent = '已登录';
     $('authPageStatus').textContent = '控制面已保护';
@@ -224,7 +229,7 @@ async function boot() {
   syncPage();
   try { const health = await api('/api/health'); $('health').textContent = `${health.ok ? 'online' : 'offline'} · ${health.version || ''}`; } catch (error) { $('health').textContent = `offline · ${error.message}`; }
   try { await refreshAuth(); } catch (error) { $('authResult').textContent = error.message; return; }
-  if (authState.required && !authState.authenticated) { navigate('security'); return; }
+  if (authState.required && !authState.authenticated) { navigate(authState.configured ? 'login' : 'security'); return; }
   try { await refresh(); } catch (error) { $('status').textContent = error.stack || error.message; }
 }
 
@@ -240,8 +245,8 @@ $('install').onclick = async () => { try { $('integrationState').textContent = '
  $('verifyCoexistence').onclick = async () => { try { const model = selectedThirdPartyModel() || catalog.thirdParty?.models?.[0]?.id; if (!model) throw new Error('当前没有可用的第三方模型'); $('coexistProof').textContent = '正在运行真实共存证明…'; coexistenceProof = await api('/api/verify/coexistence', { method: 'POST', body: JSON.stringify({ model }) }); $('coexistProof').textContent = JSON.stringify(coexistenceProof, null, 2); renderIntegration(); renderStatus(); } catch (error) { coexistenceProof = { ok: false, error: error.message }; $('coexistProof').textContent = JSON.stringify(coexistenceProof, null, 2); renderStatus(); } };
 $('runWorker').onclick = async () => { try { $('runResult').textContent = '正在运行真实 Codex 路由…'; $('runResult').textContent = JSON.stringify(await api('/api/worker/run', { method: 'POST', body: JSON.stringify({ role: $('testRole').value, task: $('testTask').value }) }), null, 2); } catch (error) { $('runResult').textContent = error.stack || error.message; } };
 $('setupPasswordButton').onclick = async () => { try { const password = $('setupPassword').value; const confirmPassword = $('setupPasswordConfirm').value; $('authResult').textContent = '正在设置密码…'; await api('/api/auth/setup', { method: 'POST', body: JSON.stringify({ password, confirmPassword }) }); $('setupPassword').value = ''; $('setupPasswordConfirm').value = ''; $('authResult').textContent = '密码已设置，已自动登录。'; await boot(); } catch (error) { $('authResult').textContent = error.message; } };
-$('loginButton').onclick = async () => { try { $('authResult').textContent = '正在登录…'; await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ password: $('loginPassword').value }) }); $('loginPassword').value = ''; $('authResult').textContent = '登录成功。'; await boot(); } catch (error) { $('authResult').textContent = error.message; } };
-$('logoutButton').onclick = async () => { try { await api('/api/auth/logout', { method: 'POST' }); authState = null; await refreshAuth(); navigate('security'); } catch (error) { $('authResult').textContent = error.message; } };
+$('loginPageButton').onclick = async () => { try { $('loginPageResult').textContent = '正在登录…'; await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ password: $('loginPagePassword').value }) }); $('loginPagePassword').value = ''; $('loginPageResult').textContent = '登录成功。'; await boot(); if (authState?.authenticated) navigate('dashboard'); } catch (error) { $('loginPageResult').textContent = error.message; } };
+$('logoutButton').onclick = async () => { try { await api('/api/auth/logout', { method: 'POST' }); authState = null; await refreshAuth(); navigate('login'); } catch (error) { $('authResult').textContent = error.message; } };
 $('changePasswordButton').onclick = async () => { try { const newPassword = $('newPassword').value; if (newPassword !== $('newPasswordConfirm').value) throw new Error('password confirmation does not match'); await api('/api/auth/change', { method: 'POST', body: JSON.stringify({ currentPassword: $('currentPassword').value, newPassword }) }); $('currentPassword').value = ''; $('newPassword').value = ''; $('newPasswordConfirm').value = ''; $('authResult').textContent = '密码已更换。'; await boot(); } catch (error) { $('authResult').textContent = error.message; } };
 
 boot();

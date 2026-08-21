@@ -33,6 +33,17 @@
       </aside>
 
       <main class="content">
+        <section class="page login-page" data-page="login" hidden>
+          <div class="login-shell">
+            <div class="page-heading"><div><p class="eyebrow">CONTROL PLANE LOGIN</p><h1>登录控制面</h1><p class="lead">这是本地 Web 控制面的独立登录入口。它只验证控制面密码，不会触碰 ChatGPT OAuth、New API Key 或 Codex 会话。</p></div></div>
+            <div class="card auth-card login-card">
+              <div class="section-head"><div><h2>欢迎回来</h2><p class="muted">登录后才能访问模型路由、连通性和 Codex 原生集成。</p></div><span class="pill">需登录</span></div>
+              <div id="loginPageForm" class="auth-form"><label>控制面密码<input id="loginPagePassword" type="password" autocomplete="current-password" placeholder="输入控制面密码"></label><button id="loginPageButton">登录控制面</button></div>
+              <pre id="loginPageResult" class="compact"></pre>
+            </div>
+          </div>
+        </section>
+
         <section class="page" data-page="dashboard">
           <div class="page-heading hero-heading">
             <div><p class="eyebrow">CHATGPT LINUX · CODEX NATIVE</p><h1>工作台</h1><p class="lead">把官方 ChatGPT、New API 和 Codex 原生线程放在一个清晰的本地控制面中。</p></div>
@@ -53,7 +64,6 @@
           <div class="card auth-card">
             <div class="section-head"><div><h2 id="authPageStatus">正在检查</h2><p id="authHint" class="muted">正在检查登录保护…</p></div></div>
             <div id="authSetup" class="auth-form" hidden><div class="form-grid"><label>新密码<input id="setupPassword" type="password" autocomplete="new-password" placeholder="至少 14 位，大小写/数字/符号至少三类"></label><label>确认新密码<input id="setupPasswordConfirm" type="password" autocomplete="new-password" placeholder="再次输入相同密码"></label></div><button id="setupPasswordButton">设置密码并登录</button></div>
-            <div id="authLogin" class="auth-form" hidden><label>控制面密码<input id="loginPassword" type="password" autocomplete="current-password" placeholder="输入控制面密码"></label><button id="loginButton">登录控制面</button></div>
             <div id="authChange" class="auth-form" hidden><div class="form-grid"><label>当前密码<input id="currentPassword" type="password" autocomplete="current-password"></label><label>新密码<input id="newPassword" type="password" autocomplete="new-password"></label><label>确认新密码<input id="newPasswordConfirm" type="password" autocomplete="new-password"></label></div><div class="actions"><button id="changePasswordButton">更换密码</button><button id="logoutButton" class="secondary">退出登录</button></div></div>
             <pre id="authResult" class="compact"></pre>
           </div>
