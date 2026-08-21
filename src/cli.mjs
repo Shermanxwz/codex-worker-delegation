@@ -18,6 +18,11 @@ if (cmd === 'doctor') {
   const snap = await manager.install();
   await store.update((s)=>{s.installed=true;return s;});
   console.log(JSON.stringify({ok:true,providerId:snap.providerId,topLevelPreserved:snap.topLevelPreserved,message:'Codex integration installed without touching auth.json or the built-in openai selector.'},null,2));
+} else if (cmd === 'uninstall') {
+  const manager = new CodexConfigManager({ env });
+  const snap = await manager.uninstall();
+  await store.update((s)=>{s.installed=false;return s;});
+  console.log(JSON.stringify({ok:true,providerId:snap.providerId,topLevelPreserved:snap.topLevelPreserved,message:'Managed provider and agent roles removed; official ChatGPT selectors and auth remain untouched.'},null,2));
 } else if (cmd === 'official') {
   const manager = new CodexConfigManager({ env });
   console.log(JSON.stringify({ok:true,message:'No restore is necessary: v3 never switches the top-level provider. Official ChatGPT auth remains owned by Codex.',topLevelSelectors:await manager.selectors()},null,2));
