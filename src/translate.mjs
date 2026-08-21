@@ -1,5 +1,14 @@
 import crypto from 'node:crypto';
 
+export const MAX_CHAT_SSE_BLOCK_BYTES = 2 * 1024 * 1024;
+export const MAX_CHAT_ACCUMULATED_TEXT_BYTES = 16 * 1024 * 1024;
+export const MAX_CHAT_TOOL_ARGUMENT_BYTES = 8 * 1024 * 1024;
+export const MAX_CHAT_TOOL_CALLS = 256;
+const MAX_CHAT_TOOL_NAME_BYTES = 4096;
+
+function sizeOf(value) { return Buffer.byteLength(String(value || ''), 'utf8'); }
+function responseTooLarge(what, limit) { const error = new Error(`${what} exceeded ${limit} bytes`); error.code = 'UPSTREAM_RESPONSE_TOO_LARGE'; throw error; }
+
 function textFromContent(content) {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
@@ -30,28 +39,52 @@ function id(prefix) { return `${prefix}_${crypto.randomBytes(12).toString('hex')
 function sse(value) { return `data: ${JSON.stringify(value)}\n\n`; }
 
 export class ChatSseToResponses {
-  constructor({ model = 'unknown' } = {}) {this.responseId = id('resp'); this.messageId = id('msg'); this.model = model;this.text = ''; this.tools = new Map(); this.usage = null; this.created = false; this.done = false;}
+  constructor({ model = 'unknown' } = {}) {this.responseId = id('resp'); this.messageId = id('msg'); this.model = model;this.text = ''; this.textBytes = 0; this.toolArgumentBytes = 0; this.tools = new Map(); this.usage = null; this.created = false; this.done = false;}
   start() {if (this.created) return '';this.created = true;return sse({ type: 'response.created', response: { id: this.responseId, object: 'response', status: 'in_progress', model: this.model, output: [] } });}
-  feedData(data) {if (data === '[DONE]') return this.finish();let chunk; try { chunk = JSON.parse(data); } catch { return ''; }let out = this.start();if (chunk.usage) this.usage = chunk.usage;const delta = chunk.choices?.[0]?.delta || {};if (typeof delta.content === 'string' && delta.content) {this.text += delta.content;out += sse({ type: 'response.output_text.delta', item_id: this.messageId, output_index: 0, content_index: 0, delta: delta.content });}for (const tc of delta.tool_calls || []) {const index = tc.index ?? 0;const cur = this.tools.get(index) || { id: tc.id || id('call'), name: '', arguments: '' };if (tc.id) cur.id = tc.id;if (tc.function?.name) cur.name += tc.function.name;if (tc.function?.arguments) cur.arguments += tc.function.arguments;this.tools.set(index, cur);}return out;}
+  feedData(data) {
+    if (data === '[DONE]') return this.finish();
+    let chunk; try { chunk = JSON.parse(data); } catch { return ''; }
+    let out = this.start();if (chunk.usage) this.usage = chunk.usage;const delta = chunk.choices?.[0]?.delta || {};
+    if (typeof delta.content === 'string' && delta.content) {
+      this.textBytes += sizeOf(delta.content); if (this.textBytes > MAX_CHAT_ACCUMULATED_TEXT_BYTES) responseTooLarge('upstream Chat text', MAX_CHAT_ACCUMULATED_TEXT_BYTES);
+      this.text += delta.content;out += sse({ type: 'response.output_text.delta', item_id: this.messageId, output_index: 0, content_index: 0, delta: delta.content });
+    }
+    for (const tc of delta.tool_calls || []) {
+      const index = tc.index ?? 0;
+      if (!this.tools.has(index) && this.tools.size >= MAX_CHAT_TOOL_CALLS) responseTooLarge('upstream Chat tool-call count', MAX_CHAT_TOOL_CALLS);
+      const cur = this.tools.get(index) || { id: tc.id || id('call'), name: '', arguments: '', argumentBytes: 0 };
+      if (tc.id) cur.id = tc.id;
+      if (tc.function?.name) { if (sizeOf(cur.name) + sizeOf(tc.function.name) > MAX_CHAT_TOOL_NAME_BYTES) responseTooLarge('upstream Chat tool name', MAX_CHAT_TOOL_NAME_BYTES); cur.name += tc.function.name; }
+      if (tc.function?.arguments) {
+        const added = sizeOf(tc.function.arguments); cur.argumentBytes += added; this.toolArgumentBytes += added;
+        if (cur.argumentBytes > MAX_CHAT_TOOL_ARGUMENT_BYTES || this.toolArgumentBytes > MAX_CHAT_TOOL_ARGUMENT_BYTES) responseTooLarge('upstream Chat tool arguments', MAX_CHAT_TOOL_ARGUMENT_BYTES);
+        cur.arguments += tc.function.arguments;
+      }
+      this.tools.set(index, cur);
+    }
+    return out;
+  }
   finish() {if (this.done) return '';this.done = true;let out = this.start();if (this.text) out += sse({ type: 'response.output_item.done', output_index: 0, item: { id: this.messageId, type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: this.text, annotations: [] }] } });let idx = this.text ? 1 : 0;for (const [, tc] of [...this.tools.entries()].sort(([a], [b]) => a - b)) out += sse({ type: 'response.output_item.done', output_index: idx++, item: { id: id('fc'), type: 'function_call', call_id: tc.id, name: tc.name, arguments: tc.arguments, status: 'completed' } });const input = Number(this.usage?.prompt_tokens || 0), output = Number(this.usage?.completion_tokens || 0), total = Number(this.usage?.total_tokens || input + output);out += sse({ type: 'response.completed', response: { id: this.responseId, object: 'response', status: 'completed', model: this.model, output: [], usage: { input_tokens: input, input_tokens_details: { cached_tokens: 0 }, output_tokens: output, output_tokens_details: { reasoning_tokens: 0 }, total_tokens: total } } });return out;}
 }
 
 export async function chatJsonToResponses(response, model) {const text = response.choices?.[0]?.message?.content || '';const output = [];if (text) output.push({ id: id('msg'), type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text, annotations: [] }] });for (const tc of response.choices?.[0]?.message?.tool_calls || []) output.push({ id: id('fc'), type: 'function_call', call_id: tc.id, name: tc.function?.name, arguments: tc.function?.arguments || '{}', status: 'completed' });const u = response.usage || {};return { id: id('resp'), object: 'response', status: 'completed', model, output, usage: { input_tokens: u.prompt_tokens || 0, input_tokens_details: { cached_tokens: u.prompt_tokens_details?.cached_tokens || 0 }, output_tokens: u.completion_tokens || 0, output_tokens_details: { reasoning_tokens: u.completion_tokens_details?.reasoning_tokens || 0 }, total_tokens: u.total_tokens || 0 } };}
 
 async function emit(onChunk, value) { if (value) await onChunk(value); }
-async function processSseBlock(block, converter, onChunk) {for (const line of block.split(/\r?\n/)) if (line.startsWith('data:')) await emit(onChunk, converter.feedData(line.slice(5).trim()));}
+async function processSseBlock(block, converter, onChunk) {if (sizeOf(block) > MAX_CHAT_SSE_BLOCK_BYTES) responseTooLarge('upstream Chat SSE block', MAX_CHAT_SSE_BLOCK_BYTES);for (const line of block.split(/\r?\n/)) if (line.startsWith('data:')) await emit(onChunk, converter.feedData(line.slice(5).trim()));}
 
 export async function convertChatSse(readable, onChunk, { model } = {}) {
   const converter = new ChatSseToResponses({ model });await emit(onChunk, converter.start());
   const decoder = new TextDecoder(); let buffer = '';
   for await (const bytes of readable) {
     buffer += decoder.decode(bytes, { stream: true });
+    if (sizeOf(buffer) > MAX_CHAT_SSE_BLOCK_BYTES && !/\r?\n\r?\n/.test(buffer)) responseTooLarge('upstream Chat SSE buffer', MAX_CHAT_SSE_BLOCK_BYTES);
     while (true) {
       const match = /\r?\n\r?\n/.exec(buffer); if (!match) break;
       const block = buffer.slice(0, match.index); buffer = buffer.slice(match.index + match[0].length);await processSseBlock(block, converter, onChunk);
     }
   }
   buffer += decoder.decode();
+  if (sizeOf(buffer) > MAX_CHAT_SSE_BLOCK_BYTES) responseTooLarge('upstream Chat SSE buffer', MAX_CHAT_SSE_BLOCK_BYTES);
   if (buffer.trim()) await processSseBlock(buffer, converter, onChunk);
   await emit(onChunk, converter.finish());
 }

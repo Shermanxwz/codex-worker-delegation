@@ -14,14 +14,20 @@ function providerRequestTimeoutMs(env = process.env) {
 async function readBodyLimited(response, maxBytes) {
   if (!response.body) return '';
   const decoder = new TextDecoder(); let text = ''; let total = 0;
-  for await (const chunk of response.body) {
-    total += chunk.byteLength;
-    if (total > maxBytes) { try { await response.body.cancel(); } catch {} const error = new Error(`upstream response exceeded ${maxBytes} bytes`); error.code = 'UPSTREAM_RESPONSE_TOO_LARGE'; throw error; }
-    text += decoder.decode(chunk, { stream: true });
-  }
-  return text + decoder.decode();
+  const reader = response.body.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read(); if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel('upstream response size limit exceeded').catch(() => {});
+        const error = new Error(`upstream response exceeded ${maxBytes} bytes`); error.code = 'UPSTREAM_RESPONSE_TOO_LARGE'; throw error;
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    return text + decoder.decode();
+  } finally { reader.releaseLock(); }
 }
-async function readErrorBody(response) { try { return await readBodyLimited(response.clone(), MAX_ERROR_BODY_BYTES); } catch (error) { return `[error body unavailable: ${error.message}]`; } }
 
 function requestAbortScope(req, res, timeoutMs) {
   const controller = new AbortController();
@@ -51,8 +57,17 @@ export class ResponsesGateway {
       if (protocol === 'chat') return await this.#chat(res, body, ep.chat, headers, provider, state, scope.signal);
       if (protocol === 'responses') return await this.#responses(res, withoutForwardedReasoning(body, provider, state), ep.responses, headers, scope.signal);
       const upstream = await this.fetchImpl(ep.responses, { method: 'POST', headers, body: JSON.stringify(withoutForwardedReasoning(body, provider, state)), signal: scope.signal });
-      if (!upstream.ok) {const errorText = await readErrorBody(upstream);if (shouldTryChatFallback(upstream.status, errorText)) {await this.#cache(model, 'chat');return await this.#chat(res, body, ep.chat, headers, provider, state, scope.signal);}}
-      if (upstream.ok) await this.#cache(model, 'responses');return await pipeFetch(upstream, res);
+      if (!upstream.ok) {
+        // Consume the actual failed body under a hard cap. Do not clone/tee it:
+        // cancelling only one tee branch can wait forever for its unread sibling.
+        const errorText = await readBodyLimited(upstream, MAX_ERROR_BODY_BYTES);
+        if (shouldTryChatFallback(upstream.status, errorText)) {
+          await this.#cache(model, 'chat');
+          return await this.#chat(res, body, ep.chat, headers, provider, state, scope.signal);
+        }
+        return pipeBuffered(upstream, res, errorText);
+      }
+      await this.#cache(model, 'responses');return await pipeFetch(upstream, res);
     } catch (error) {
       if (res.destroyed || error?.code === 'DOWNSTREAM_CLOSED' || scope.signal.reason?.code === 'DOWNSTREAM_CLOSED') return;
       if (scope.signal.aborted && scope.signal.reason?.code === 'PROVIDER_REQUEST_TIMEOUT') return json(res, 504, { error: { message: scope.signal.reason.message, type: 'upstream_timeout' } });
@@ -88,10 +103,11 @@ async function writeWithBackpressure(res, chunk) {
   });
 }
 
+function responseHeaders(upstream) { const headers = {};for (const key of ['content-type', 'cache-control', 'x-request-id', 'openai-model']) { const v = upstream.headers.get(key); if (v) headers[key] = v; }return headers; }
+function pipeBuffered(upstream, res, text) { if (res.destroyed || res.writableEnded) return; res.writeHead(upstream.status, responseHeaders(upstream)); res.end(text); }
 export async function pipeFetch(upstream, res) {
-  const headers = {};for (const key of ['content-type', 'cache-control', 'x-request-id', 'openai-model']) { const v = upstream.headers.get(key); if (v) headers[key] = v; }
   if (res.destroyed || res.writableEnded) return;
-  res.writeHead(upstream.status, headers);if (!upstream.body) return res.end();
+  res.writeHead(upstream.status, responseHeaders(upstream));if (!upstream.body) return res.end();
   for await (const chunk of upstream.body) await writeWithBackpressure(res, chunk);
   if (!res.destroyed && !res.writableEnded) res.end();
 }

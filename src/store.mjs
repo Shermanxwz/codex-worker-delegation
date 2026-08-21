@@ -32,6 +32,7 @@ export const DEFAULT_STATE = Object.freeze({
 
 const STATE_LOCK_TIMEOUT_MS = 10_000;
 const STATE_LOCK_STALE_MS = 60_000;
+const STATE_LOCK_OWNER_GRACE_MS = 500;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function syncDirectory(directory) {
@@ -98,7 +99,12 @@ async function acquireFileLock(targetFile) {
       let stale = false;
       try {
         const stat = await fs.stat(lockFile);
-        stale = (Date.now() - stat.mtimeMs) > STATE_LOCK_STALE_MS || !await lockOwnerAlive(lockFile);
+        const ageMs = Date.now() - stat.mtimeMs;
+        // open(O_EXCL) makes the lock path visible before its owner metadata has
+        // necessarily been written. Never interpret that publication window as
+        // a dead owner. After the grace window, a dead PID can be reaped early;
+        // the absolute stale age remains a final recovery path for malformed locks.
+        stale = ageMs > STATE_LOCK_STALE_MS || (ageMs > STATE_LOCK_OWNER_GRACE_MS && !await lockOwnerAlive(lockFile));
       } catch (statError) {
         if (statError.code === 'ENOENT') continue;
         throw statError;

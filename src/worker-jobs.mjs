@@ -8,6 +8,7 @@ export const WORKER_MAX_TOTAL_TIMEOUT_MS = 60 * 60 * 1000;
 export const WORKER_DEFAULT_EXTENSION_MS = 15 * 60 * 1000;
 export const WORKER_REVIEW_LEAD_MS = 90 * 1000;
 export const WORKER_HEARTBEAT_MS = 5000;
+const WORKER_CLOSE_TIMEOUT_MS = 5000;
 export const TERMINAL_TASK_STATES = Object.freeze(new Set(['completed', 'failed', 'timed_out', 'cancelled', 'delegation_required']));
 
 export function normalizeWorkerTimeout(value) {
@@ -64,6 +65,17 @@ export function errorDetails(error) {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function iso(now) { return new Date(now).toISOString(); }
 
+async function settleWithin(promises, timeoutMs = WORKER_CLOSE_TIMEOUT_MS) {
+  if (!promises.length) return true;
+  let timer;
+  const completed = await Promise.race([
+    Promise.allSettled(promises).then(() => true),
+    new Promise((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); timer.unref?.(); })
+  ]);
+  clearTimeout(timer);
+  return completed;
+}
+
 function safeEventDetails(details) {
   if (details === undefined || details === null) return null;
   if (typeof details === 'string') return details.slice(0, 500);
@@ -86,12 +98,15 @@ export class WorkerTaskManager {
     this.modeGuardedTasks = new Set();
     this.reviewTimers = new Map();
     this.writes = new Map();
+    this.runs = new Map();
     this.cancelers = new Map();
     this.extenders = new Map();
     this.extensionLocks = new Set();
+    this.closing = false;
   }
 
   async start(metadata, runner) {
+    if (this.closing) { const error = new Error('Worker task manager is shutting down'); error.code = 'WORKER_MANAGER_CLOSING'; throw error; }
     const createdAt = this.now();
     const timeoutMs = normalizeWorkerTimeout(metadata.timeoutMs);
     const task = {
@@ -136,7 +151,7 @@ export class WorkerTaskManager {
     const hasControlState = await fs.access(statePath(this.env)).then(() => true).catch(() => false);
     if (hasControlState) this.modeGuardedTasks.add(task.taskId);
     await this.#queueWrite(task);
-    void this.#run(task.taskId, runner).catch(async (error) => {
+    const run = this.#run(task.taskId, runner).catch(async (error) => {
       const completedAt = this.now();
       await this.#update(task.taskId, {
         status: isWorkerTimeout(error) ? 'timed_out' : 'failed',
@@ -146,6 +161,10 @@ export class WorkerTaskManager {
         error: errorDetails(error)
       }, { type: 'worker.manager_failed', message: error.message || 'Worker task failed before execution started' }).catch(() => {});
     });
+    let tracked;
+    tracked = run.finally(() => { if (this.runs.get(task.taskId) === tracked) this.runs.delete(task.taskId); });
+    this.runs.set(task.taskId, tracked);
+    void tracked.catch(() => {});
     return structuredClone(task);
   }
 
@@ -237,11 +256,18 @@ export class WorkerTaskManager {
     } finally { this.extensionLocks.delete(taskId); }
   }
 
-  close() {
+  async close(reason = 'control plane closed') {
+    if (this.closing) {
+      await settleWithin([...this.runs.values(), ...this.writes.values()]);
+      return;
+    }
+    this.closing = true;
     for (const timer of this.timers.values()) clearInterval(timer); this.timers.clear();
     for (const timer of this.modeTimers.values()) clearInterval(timer); this.modeTimers.clear(); this.modeGuardedTasks.clear();
     for (const timer of this.reviewTimers.values()) clearTimeout(timer); this.reviewTimers.clear();
-    for (const canceler of this.cancelers.values()) { try { void Promise.resolve(canceler('control plane closed')).catch(() => {}); } catch {} }
+    await this.cancelAll(reason).catch(() => {});
+    await settleWithin([...this.runs.values()]);
+    await settleWithin([...this.writes.values()]);
     this.cancelers.clear(); this.extenders.clear(); this.extensionLocks.clear();
   }
 
