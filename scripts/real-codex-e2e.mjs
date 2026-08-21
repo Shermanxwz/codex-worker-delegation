@@ -2,12 +2,14 @@ import http from 'node:http';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { createApp } from '../src/server.mjs';
 import { StateStore } from '../src/store.mjs';
 import { SecretVault } from '../src/vault.mjs';
 import { CodexConfigManager } from '../src/codex-config.mjs';
 import { withCodexAppServer } from '../src/app-server.mjs';
 
+const ROOT = path.resolve('.');
 const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'cwd-real-codex-'));
 const gatewayPort = await freePort();
 const env = {
@@ -22,6 +24,13 @@ try {
   await fs.mkdir(env.CODEX_HOME, { recursive: true });
   const originalConfig = 'model_provider = "openai"\nmodel = "official-preserved"\n';
   await fs.writeFile(path.join(env.CODEX_HOME, 'config.toml'), originalConfig);
+
+  const marketplace = command([env.CODEX_BIN, 'plugin', 'marketplace', 'add', ROOT, '--json'], env);
+  if (!marketplace.ok) throw new Error(`official Codex marketplace install failed: ${marketplace.output}`);
+  const pluginAdd = command([env.CODEX_BIN, 'plugin', 'add', 'codex-worker-delegation@codex-worker-delegation-local', '--json'], env);
+  if (!pluginAdd.ok) throw new Error(`official Codex plugin install failed: ${pluginAdd.output}`);
+  const pluginList = command([env.CODEX_BIN, 'plugin', 'list', '--json'], env);
+  if (!pluginList.ok || !pluginList.output.includes('codex-worker-delegation')) throw new Error(`official Codex plugin list did not contain the installed plugin: ${pluginList.output}`);
 
   upstream = http.createServer(async (req, res) => {
     let body = '';
@@ -85,12 +94,16 @@ try {
   if (!result.output.includes('REAL_CROSS_PROVIDER_E2E_OK')) throw new Error(`sentinel missing: ${JSON.stringify(result)}`);
   const finalState = await store.read();
   if (finalState.protocolCache['mock-codex-model']?.protocol !== 'chat') throw new Error(`expected chat fallback cache, got ${JSON.stringify(finalState.protocolCache)}`);
-  console.log(JSON.stringify({ ok: true, execution: 'codex app-server explicit modelProvider', output: result.output, detectedProtocol: 'chat', officialSelectorPreserved: true }));
+  console.log(JSON.stringify({ ok: true, execution: 'official Codex plugin manager + app-server explicit modelProvider', output: result.output, detectedProtocol: 'chat', officialSelectorPreserved: true, pluginInstalled: true }));
 } finally {
   await new Promise((r) => app?.server?.close(() => r())).catch(() => {});
   await new Promise((r) => upstream?.close(() => r())).catch(() => {});
   await fs.rm(tmp, { recursive: true, force: true });
 }
 
+function command(args, commandEnv) {
+  const result = spawnSync(args[0], args.slice(1), { cwd: ROOT, env: commandEnv, encoding: 'utf8', timeout: 120000 });
+  return { ok: result.status === 0, status: result.status, output: [result.stdout, result.stderr, result.error?.message].filter(Boolean).join('\n').trim() };
+}
 async function listen(server) { await new Promise((r) => server.listen(0, '127.0.0.1', r)); return server.address().port; }
 async function freePort() { const s = http.createServer(); const p = await listen(s); await new Promise((r) => s.close(r)); return p; }

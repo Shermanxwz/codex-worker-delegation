@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-08-21T15:29:05Z",
+  "architecture": "amd64",
+  "package": {
+    "name": "chatgpt",
+    "version": "26.818.31338",
+    "sha256": "43827848a74724b572be7f8dc954698ab2cc0916f7f9d5991a0ee8289944f95b",
+    "sizeBytes": 388601730,
+    "latestUrl": "https://persistent.oaistatic.com/codex-app-prod/linux/deb/latest/chatgpt_amd64.deb",
+    "versionedUrl": "https://persistent.oaistatic.com/codex-app-prod/linux/deb/pool/main/c/chatgpt/chatgpt_26.818.31338_amd64.deb"
+  },
+  "bundledCodex": {
+    "path": "/usr/lib/chatgpt/resources/codex",
+    "version": "codex-cli 0.149.0-alpha.4"
+  },
+  "acceptance": {
+    "appServerSchemaGenerated": true,
+    "officialPluginManagerInstall": true,
+    "explicitModelProviderCrossProviderE2E": true,
+    "sentinel": "REAL_CROSS_PROVIDER_E2E_OK",
+    "officialSelectorPreserved": true
+  },
+  "note": "This is immutable release evidence for the recorded package. CI also exercises the mutable latest channel as a forward-compatibility canary."
+}

@@ -1,8 +1,15 @@
-const COORDINATION = new Set(['spawn_agent', 'send_message', 'wait_agent', 'followup_task', 'interrupt_agent', 'list_agents', 'Agent', 'update_plan', 'delegate_worker', 'delegation_status']);
+const COORDINATION = new Set(['spawn_agent', 'send_message', 'wait_agent', 'followup_task', 'interrupt_agent', 'list_agents', 'Agent', 'update_plan']);
 const SPAWN = new Set(['spawn_agent', 'Agent']);
-const VERIFIER_BLOCKED = [/exec/i, /shell/i, /apply_patch/i, /write/i, /edit/i, /delete/i, /move/i, /rename/i];
+const DELEGATION_TOOLS = new Set(['delegate_worker', 'delegation_status', 'worker_status', 'worker_extend', 'worker_cancel']);
+const VERIFIER_BLOCKED = [/exec/i, /shell/i, /apply_patch/i, /write/i, /edit/i, /delete/i, /move/i, /rename/i, /create/i, /mkdir/i, /chmod/i, /chown/i, /truncate/i, /commit/i];
 
-function isDelegationMcp(toolName = '') { const name=String(toolName); return name.includes('codex-worker-delegation') || name.endsWith('delegate_worker') || name.endsWith('delegation_status'); }
+function isDelegationMcp(toolName = '') {
+  const name = String(toolName);
+  for (const tool of DELEGATION_TOOLS) {
+    if (name === tool || name.endsWith(`__${tool}`) || name.endsWith(`.${tool}`) || name.endsWith(`/${tool}`)) return true;
+  }
+  return false;
+}
 function roleFromSpawnInput(input = {}) { const type=String(input?.agent_type || input?.agentType || '').toLowerCase(); if(type.includes('verifier')) return 'verifier'; if(type.includes('worker')) return 'worker'; return null; }
 function routeFor(state, mode, roleName) { return state?.routing?.[mode]?.[roleName] || null; }
 
@@ -18,9 +25,11 @@ export function evaluateTool({ mode='AUTO', toolName, agentId, agentType, toolIn
 
   if (!isSubagent && SPAWN.has(toolName)) {
     const roleName=roleFromSpawnInput(toolInput);
+    if (mode === 'DELEGATE' && !roleName) return {allow:false,reason:'DELEGATE mode blocks unmanaged native subagent types. Use cwd-worker/cwd-verifier or delegate_worker so provider routing remains enforceable.'};
     if (roleName) {
       const main=routeFor(state,mode,'main'); const route=routeFor(state,mode,roleName);
-      if (main && route && executionPlan(main,route,roleName).execution !== 'native_subagent_required') return {allow:false,reason:`${mode}.${roleName} involves a third-party provider. Native spawn_agent is blocked because current Codex custom-provider subagent transport can lose task payloads; call delegate_worker instead.`};
+      if (!main || !route) return {allow:false,reason:`${mode}.${roleName} routing is unavailable; failing closed.`};
+      if (executionPlan(main,route,roleName).execution !== 'native_subagent_required') return {allow:false,reason:`${mode}.${roleName} involves a third-party provider. Native spawn_agent is blocked because current Codex custom-provider subagent transport can lose task payloads; call delegate_worker instead.`};
     }
   }
 
@@ -32,8 +41,8 @@ export function evaluateTool({ mode='AUTO', toolName, agentId, agentType, toolIn
   }
   if (mode==='MAIN') {
     if (isSubagent) return {allow:false,reason:'MAIN mode freezes subagent tool execution.'};
-    if (SPAWN.has(toolName) || String(toolName).endsWith('delegate_worker')) return {allow:false,reason:'MAIN mode disables worker spawning and delegation.'};
-    return {allow:true,reason:'MAIN mode allows root-agent tools.'};
+    if (SPAWN.has(toolName) || isDelegationMcp(toolName) && String(toolName).match(/(?:^|__|\.|\/)(?:delegate_worker|worker_extend)$/)) return {allow:false,reason:'MAIN mode disables worker spawning and lease extension.'};
+    return {allow:true,reason:'MAIN mode allows root-agent tools and existing-worker inspection/cancellation.'};
   }
   return {allow:false,reason:`Unknown delegation mode ${mode}; failing closed.`};
 }

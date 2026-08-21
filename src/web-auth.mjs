@@ -60,6 +60,10 @@ export class WebAuth {
       await fs.rename(tmp, this.file);
     } else await fs.writeFile(this.file, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
     await fs.chmod(this.file, 0o600).catch(() => {});
+    // A password rotation is a credential-boundary change. Never allow an
+    // already-issued browser session to outlive that boundary.
+    this.sessions.clear();
+    this.failures.clear();
   }
 
   async verifyPassword(password) {
