@@ -48,24 +48,51 @@ RELEASES="$INSTALL_ROOT/releases"
 RELEASE_DIR="$RELEASES/$RELEASE_ID"
 CURRENT="$INSTALL_ROOT/current"
 PREVIOUS="$INSTALL_ROOT/previous"
+NEXT="$INSTALL_ROOT/.next"
 
 mkdir -p "$RELEASES" "$SYSTEMD_DIR"
 chmod 700 "$INSTALL_ROOT" "$RELEASES" 2>/dev/null || true
-rm -rf "$RELEASE_DIR.tmp"
-mkdir -p "$RELEASE_DIR.tmp"
-(
-  cd "$ROOT"
-  tar --exclude='./.git' --exclude='./node_modules' --exclude='./.DS_Store' -cf - .
-) | tar -C "$RELEASE_DIR.tmp" -xf -
-find "$RELEASE_DIR.tmp/scripts" "$RELEASE_DIR.tmp/plugins/codex-worker-delegation" -type f -name '*.sh' -exec chmod 755 {} +
-mv "$RELEASE_DIR.tmp" "$RELEASE_DIR"
-
-if [[ -L "$CURRENT" || -e "$CURRENT" ]]; then
-  OLD_TARGET="$(readlink -f "$CURRENT" 2>/dev/null || true)"
-  if [[ -n "$OLD_TARGET" && "$OLD_TARGET" != "$RELEASE_DIR" ]]; then ln -sfn "$OLD_TARGET" "$PREVIOUS"; fi
+if [[ ! -d "$RELEASE_DIR" ]]; then
+  rm -rf "$RELEASE_DIR.tmp"
+  mkdir -p "$RELEASE_DIR.tmp"
+  (
+    cd "$ROOT"
+    tar --exclude='./.git' --exclude='./node_modules' --exclude='./.DS_Store' -cf - .
+  ) | tar -C "$RELEASE_DIR.tmp" -xf -
+  printf '%s\n' "$RELEASE_ID" >"$RELEASE_DIR.tmp/.release-id"
+  find "$RELEASE_DIR.tmp/scripts" "$RELEASE_DIR.tmp/plugins/codex-worker-delegation" -type f -name '*.sh' -exec chmod 755 {} +
+  mv "$RELEASE_DIR.tmp" "$RELEASE_DIR"
 fi
-ln -sfn "$RELEASE_DIR" "$INSTALL_ROOT/.current.new"
-mv -Tf "$INSTALL_ROOT/.current.new" "$CURRENT"
+
+rm -rf "$NEXT"
+cp -a "$RELEASE_DIR" "$NEXT"
+HAD_CURRENT=0
+if [[ -d "$CURRENT" ]]; then
+  HAD_CURRENT=1
+  rm -rf "$PREVIOUS"
+  mv "$CURRENT" "$PREVIOUS"
+fi
+mv "$NEXT" "$CURRENT"
+
+rollback_on_error() {
+  local status=$?
+  trap - ERR
+  if (( status != 0 )); then
+    echo "Installation failed; restoring previous release." >&2
+    rm -rf "$CURRENT.failed"
+    [[ -d "$CURRENT" ]] && mv "$CURRENT" "$CURRENT.failed" || true
+    if (( HAD_CURRENT == 1 )) && [[ -d "$PREVIOUS" ]]; then mv "$PREVIOUS" "$CURRENT" || true; fi
+    if [[ "${CWD_INSTALL_NO_SYSTEMD:-0}" != "1" ]]; then
+      systemctl --user daemon-reload >/dev/null 2>&1 || true
+      systemctl --user restart codex-worker-delegation.service >/dev/null 2>&1 || true
+    fi
+    if [[ "${CWD_INSTALL_NO_PLUGIN:-0}" != "1" && -d "$CURRENT" ]]; then
+      (cd "$CURRENT" && CODEX_BIN="$CODEX" bash scripts/install.sh) >/dev/null 2>&1 || true
+    fi
+  fi
+  exit "$status"
+}
+trap rollback_on_error ERR
 
 install -m 600 "$CURRENT/deploy/codex-worker-delegation.service" "$SERVICE_FILE"
 
@@ -99,9 +126,10 @@ if [[ "$AUTH_BEFORE" != "$AUTH_AFTER" ]]; then
   echo "FATAL: ChatGPT/Codex auth.json changed during installation; refusing seal." >&2
   exit 1
 fi
+trap - ERR
 
-printf 'Installed release: %s\n' "$RELEASE_DIR"
-printf 'Current: %s\n' "$(readlink -f "$CURRENT")"
-[[ -L "$PREVIOUS" ]] && printf 'Rollback target: %s\n' "$(readlink -f "$PREVIOUS")"
+printf 'Installed release: %s\n' "$RELEASE_ID"
+printf 'Current tree: %s\n' "$CURRENT"
+[[ -f "$PREVIOUS/.release-id" ]] && printf 'Rollback target: %s\n' "$(cat "$PREVIOUS/.release-id")"
 printf 'ChatGPT auth.json preservation: PASS (%s)\n' "$AUTH_AFTER"
 printf 'Run the Web control plane to configure New API, then execute: npm run seal:release\n'
