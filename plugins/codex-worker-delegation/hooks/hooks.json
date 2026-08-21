@@ -1,5 +1,5 @@
 {
-  "description": "Enforces AUTO / DELEGATE / MAIN policy at Codex PreToolUse using native subagent identity fields.",
+  "description": "Enforces AUTO / DELEGATE / MAIN policy at Codex PreToolUse, including provider-aware native-subagent and delegation boundaries.",
   "hooks": {
     "PreToolUse": [
       {

@@ -21,20 +21,55 @@ async function listen(server){await new Promise(r=>server.listen(0,'127.0.0.1',r
   m.send({jsonrpc:'2.0',id:3,method:'tools/call',params:{name:'delegation_status',arguments:{}}});
   assert.equal((await m.wait(1)).result.serverInfo.name,'codex-worker-delegation');
   const tools=(await m.wait(2)).result.tools.map(x=>x.name);
-  assert.deepEqual(tools,['delegation_status','delegate_worker']);
+  assert.deepEqual(tools,['delegation_status','delegate_worker','worker_status','worker_extend','worker_cancel']);
   const text=(await m.wait(3)).result.content[0].text;
   assert.match(text,/DELEGATE/);assert.match(text,/third_party/);assert.doesNotMatch(text,/SECRET/);
 });
 
-test('delegate_worker calls the token-authenticated local control plane and returns its worker result',async(t)=>{
+test('delegate_worker starts a token-authenticated task and returns its completed worker result',async(t)=>{
   const dir=await tempDir(t);const token='local-secret-token';await fs.writeFile(path.join(dir,'gateway.token'),token+'\n',{mode:0o600});
   let seen=null;
-  const control=http.createServer(async(req,res)=>{let body='';for await(const c of req)body+=c;seen={url:req.url,authorization:req.headers.authorization,body:JSON.parse(body)};res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({execution:'cross_provider_thread',threadId:'thread-x',output:'WORKER_OK'}))});
+  const control=http.createServer(async(req,res)=>{let body='';for await(const c of req)body+=c;seen={url:req.url,authorization:req.headers.authorization,body:JSON.parse(body)};res.writeHead(202,{'content-type':'application/json'});res.end(JSON.stringify({taskId:'wrk_testtask',status:'completed',execution:'cross_provider_thread',threadId:'thread-x',output:'WORKER_OK',result:{execution:'cross_provider_thread',threadId:'thread-x',output:'WORKER_OK'}}))});
   const port=await listen(control);t.after(()=>control.close());
   const m=startMcp(t,{CWD_DATA_DIR:dir,CWD_PORT:String(port)});
   m.send({jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-06-18'}});await m.wait(1);
   m.send({jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'delegate_worker',arguments:{task:'implement it',role:'worker',mode:'DELEGATE',cwd:'/tmp/project'}}});
   const result=await m.wait(2);const payload=JSON.parse(result.result.content[0].text);
   assert.equal(payload.execution,'cross_provider_thread');assert.equal(payload.output,'WORKER_OK');
-  assert.equal(seen.url,'/internal/worker/run');assert.equal(seen.authorization,`Bearer ${token}`);assert.deepEqual(seen.body,{task:'implement it',role:'worker',mode:'DELEGATE',cwd:'/tmp/project'});
+  assert.equal(seen.url,'/internal/worker/start');assert.equal(seen.authorization,`Bearer ${token}`);assert.deepEqual(seen.body,{task:'implement it',role:'worker',mode:'DELEGATE',cwd:'/tmp/project'});
+});
+
+test('delegate_worker is hard-blocked by the active MAIN lock before making a request',async(t)=>{
+  const dir=await tempDir(t);const token='local-secret-token';await fs.writeFile(path.join(dir,'gateway.token'),token+'\n',{mode:0o600});await fs.writeFile(path.join(dir,'state.json'),JSON.stringify({mode:'MAIN'}));
+  let requests=0;
+  const control=http.createServer(async(req,res)=>{requests+=1;res.writeHead(500);res.end('should not be called')});
+  const port=await listen(control);t.after(()=>control.close());
+  const m=startMcp(t,{CWD_DATA_DIR:dir,CWD_PORT:String(port)});
+  m.send({jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-06-18'}});await m.wait(1);
+  m.send({jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'delegate_worker',arguments:{task:'must not run',role:'worker'}}});
+  const result=await m.wait(2);assert.match(result.error.message,/MAIN mode disables/);assert.equal(requests,0);
+});
+
+test('worker_cancel forwards the authenticated task cancellation request',async(t)=>{
+  const dir=await tempDir(t);const token='local-secret-token';await fs.writeFile(path.join(dir,'gateway.token'),token+'\n',{mode:0o600});
+  let seen=null;
+  const control=http.createServer(async(req,res)=>{let body='';for await(const c of req)body+=c;seen={url:req.url,authorization:req.headers.authorization,body:JSON.parse(body)};res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({taskId:'wrk_testtask',status:'cancelled',error:{code:'WORKER_CANCELLED',message:'operator stop'}}))});
+  const port=await listen(control);t.after(()=>control.close());
+  const m=startMcp(t,{CWD_DATA_DIR:dir,CWD_PORT:String(port)});
+  m.send({jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-06-18'}});await m.wait(1);
+  m.send({jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'worker_cancel',arguments:{taskId:'wrk_testtask',reason:'stop now'}}});
+  const result=await m.wait(2);const payload=JSON.parse(result.result.content[0].text);
+  assert.equal(payload.status,'cancelled');assert.equal(seen.url,'/internal/worker/cancel/wrk_testtask');assert.equal(seen.authorization,`Bearer ${token}`);assert.deepEqual(seen.body,{reason:'stop now'});
+});
+
+test('worker_extend forwards the authenticated root-control lease renewal request',async(t)=>{
+  const dir=await tempDir(t);const token='local-secret-token';await fs.writeFile(path.join(dir,'gateway.token'),token+'\n',{mode:0o600});
+  let seen=null;
+  const control=http.createServer(async(req,res)=>{let body='';for await(const c of req)body+=c;seen={url:req.url,authorization:req.headers.authorization,body:JSON.parse(body)};res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({taskId:'wrk_testtask',status:'running',reviewDue:false,extensionCount:1,deadlineAt:'2026-08-21T00:15:00.000Z'}))});
+  const port=await listen(control);t.after(()=>control.close());
+  const m=startMcp(t,{CWD_DATA_DIR:dir,CWD_PORT:String(port)});
+  m.send({jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-06-18'}});await m.wait(1);
+  m.send({jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'worker_extend',arguments:{taskId:'wrk_testtask',extraMs:900000,reason:'progress is on scope'}}});
+  const result=await m.wait(2);const payload=JSON.parse(result.result.content[0].text);
+  assert.equal(payload.extensionCount,1);assert.equal(seen.url,'/internal/worker/extend/wrk_testtask');assert.equal(seen.authorization,`Bearer ${token}`);assert.deepEqual(seen.body,{extraMs:900000,reason:'progress is on scope'});
 });

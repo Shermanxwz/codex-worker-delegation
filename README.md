@@ -1,6 +1,6 @@
 # Codex Worker Delegation
 
-A Codex-native local control plane for the official **ChatGPT Linux desktop / Codex runtime**. It keeps Codex-owned ChatGPT authentication intact while adding a separate New API / OpenAI-compatible provider, explicit per-role model routing, current App Server integration, and a Responses compatibility gateway.
+A local control plane for the official **ChatGPT Linux desktop / Codex runtime**. It keeps Codex-owned ChatGPT authentication intact while adding a separate New API / OpenAI-compatible provider, explicit per-thread role routing, current App Server integration, and a Responses compatibility gateway. It is an integration and routing layer; it is not a replacement for the signed-in official Codex model registry or picker.
 
 ## v3: coexistence is thread routing, not login switching
 
@@ -16,7 +16,7 @@ ChatGPT Linux / Codex
                  `-- upstream /v1/chat/completions bridge
 ```
 
-The project **never needs to replace the top-level `model_provider`, rewrite `auth.json`, or log ChatGPT out**. Provider and model are chosen when a new Codex thread is created. The Web panel can prove coexistence on the actual machine by running:
+The project **never needs to replace the top-level `model_provider`, rewrite `auth.json`, or log ChatGPT out**. Provider and model are chosen when a new Codex thread is created. New API models are available to the local routing UI and the namespaced provider, but are not provider-correctly merged into the signed-in official `openai` picker because the current App Server model entries do not carry a provider binding. The Web panel can prove coexistence on the actual machine by running:
 
 ```text
 account/read (ChatGPT)
@@ -28,7 +28,7 @@ account/read (ChatGPT)
 
 ## Worker policy aligned with current Codex
 
-Current Codex releases enable subagent workflows and support custom agent models. However, 2026 custom-provider Multi-Agent V2 builds have reproducible failures where native `spawn_agent` payloads reach non-OpenAI providers as provider-specific `agent_message` / `encrypted_content` and can arrive empty.
+The project keeps native subagent transport only for built-in OpenAI → built-in OpenAI routes. In tested custom-provider routes, native `spawn_agent` payloads can reach non-OpenAI providers as provider-specific `agent_message` / `encrypted_content` and arrive empty, so third-party work uses an ordinary App Server turn instead.
 
 v3 therefore fails safe:
 
@@ -41,11 +41,23 @@ v3 therefore fails safe:
 
 Third-party → third-party intentionally uses an independent App Server thread instead of native spawn until upstream custom-provider subagent transport is reliable. This is visible in Web/MCP results; the project does not fake native-subagent provenance.
 
+Selecting a mode does not start a task by itself. A Worker runs only after a real `delegate_worker` call or a Web **运行当前模式路由** request. For an official → official route, the control plane returns a native-subagent instruction and the root Codex thread must perform `spawn_agent`; for any route involving New API, the control plane creates a tracked provider-isolated App Server task.
+
+### Observable Worker tasks
+
+Every provider-isolated Worker or Verifier task receives a persistent `wrk_...` task ID before the App Server thread starts. The local control plane records its phase, percentage estimate, model/provider, thread and turn IDs, recent progress events, last progress timestamp, last heartbeat, lease deadline, scheduled Main review point, extension count, terminal status, result, and structured error. The Web route test is a read-only view that starts immediately and polls `/api/worker/status/:taskId`; the root Main uses MCP `worker_status` to monitor a live task. Near the 15-minute lease deadline, the control plane emits `reviewDue=true`; after inspecting real progress, scope, and safety, the root Main may call `worker_extend` to renew the lease or `worker_cancel` to terminate only that task's App Server.
+
+`completed`, `failed`, `timed_out`, and `cancelled` are distinct terminal states. A timed-out task is never presented as completed, is written to the redacted audit log as `worker.failed` with `status: "timed_out"`; an operator-cancelled task is written as `worker.cancelled` with `WORKER_CANCELLED` and retains its task ID for diagnosis. Task snapshots are stored with local mode `0600`; the original prompt is not persisted in the task file.
+
+The initial Worker lease is at most 15 minutes and the default is 15 minutes. The Main review point is 90 seconds before the current deadline. A renewal adds at most 15 minutes and is accepted only at that review point; total runtime is hard-capped at 60 minutes, so a task cannot renew indefinitely. Heartbeats prove liveness, not correctness: the root Main must inspect progress events and assignment scope before renewing.
+
+The active Web mode is authoritative. A caller cannot override `MAIN` by passing `mode: "DELEGATE"`; both the MCP layer and the HTTP control plane reject that request before creating an App Server thread. Verifier is the Worker route's read-only verification role: in `DELEGATE` it inherits the Web-selected Worker provider, model, and effort (for example, `MiniMax-M3`) and has no separate selector. A verification call starts when the task flow requests it; merely configuring the inherited role does not launch a second turn.
+
 ## Web control plane
 
 The Web UI owns all normal operations:
 
-- `AUTO`, `WORKER` (`DELEGATE` internally), `MAIN` modes.
+- `AUTO`, `WORKER` (`DELEGATE` internally), `MAIN` modes. `AUTO` and `MAIN` expose one Main selector; `WORKER` exposes Main + Worker selectors.
 - Compact routing selection: AUTO exposes one Main model, WORKER exposes Main + Worker, and MAIN exposes one Main model.
 - Verifier is an internal read-only role that inherits Worker and never gets a separate model selector.
 - Official model discovery from the running Codex `model/list` API.
@@ -53,10 +65,10 @@ The Web UI owns all normal operations:
 - New API Base URL + key + protocol configuration.
 - Per-model protocol probe/cache.
 - Install/refresh of the namespaced Codex provider and agent roles.
-- Per-route reasoning effort selection with `auto` plus the effort levels advertised by the selected official model; explicit values are sent as native App Server `turn/start.effort`.
+- Per-route reasoning effort selection. `auto` omits `turn/start.effort`; an explicit value is sent on provider-isolated App Server turns, and an explicit official Main value also synchronizes Codex's `model_reasoning_effort` without changing `model_provider` or `model`.
 - Independent jump pages for access protection, New API configuration, model routing, model connectivity, and Codex integration.
 - **真实共存验收** runtime proof.
-- Real route execution for Worker / Verifier.
+- Real provider-isolated route execution for Worker / Verifier with observable task IDs, progress, heartbeats, cancellable task App Servers, and terminal audit states; official → official routes return the native `spawn_agent` instruction for the root Codex thread.
 
 ## New API endpoint normalization and protocol detection
 
@@ -111,9 +123,17 @@ After configuring a real New API provider on the target Linux machine, run the a
 npm run seal:production
 ```
 
+For CI or long-running terminal sessions, `CWD_SEAL_COMPACT=1` keeps the final report to a pass/fail summary while the stage names remain visible on stderr; `CWD_SEAL_HTTP_TIMEOUT_MS` and `CWD_SEAL_APP_SERVER_TIMEOUT_MS` can bound the corresponding seal layers.
+
 It installs the namespaced provider if needed, checks the packaged Codex runtime, runs the complete third-party model connectivity matrix, verifies the official account before and after a real third-party thread, checks the configured worker route, verifies whether the official Codex `model/list` actually contains the discovered New API IDs, and exits non-zero if any discovered model fails or the official picker integration is absent. It never prints or rewrites API keys or `auth.json`.
 
 Open the loopback Web URL, set and confirm the strong control-plane password, configure New API, select routing and reasoning effort, and press **安装 / 刷新**. The UI is split into independent pages for access protection, provider configuration, routing, model connectivity, and Codex integration. The routing surface intentionally exposes one model for AUTO, Main + Worker for WORKER, and Main only for MAIN. Verifier is an internal read-only check that inherits Worker. New API models are available through the namespaced provider and its native catalog format, but they do not merge into the signed-in official ChatGPT `openai` picker; the two providers can still run in the same local session through role routing. A concrete effort selected for a third-party model is forwarded through the gateway; `auto` leaves the upstream default in control.
+
+### What `NOT_SEALED` means
+
+`npm run seal:production` is a strict release gate, not a basic health check. It reports `SEALED` only when every discovered New API model passes the connectivity matrix **and** every New API-only ID is present in the real official Codex `model/list` picker, in addition to the account, integration, coexistence, Worker, authentication-preservation, and selector-preservation checks. A real coexistence proof or a real Worker result can pass while the strict seal remains `NOT_SEALED`.
+
+In the latest full run against the configured machine on **2026-08-21**, the strict gate recorded **0/10** New API-only IDs in the official picker and **11/13** model connectivity passes. The official/New API coexistence proof, real third-party Worker, auth preservation, and selector preservation passed. Those counts are an observed machine result and must be re-run after changing the upstream model list.
 
 The plugin-manager installer remains available:
 
@@ -123,7 +143,7 @@ The plugin-manager installer remains available:
 
 After installing or refreshing the plugin, start a **new Codex chat/task**. Codex loads bundled MCP servers and lifecycle hooks when a new session starts; an already-open session does not retroactively gain `delegation_status`, `delegate_worker`, or the `PreToolUse` policy. Review and trust the bundled hook when Codex asks. The active approval policy must also permit the `delegate_worker` MCP call; if the policy is `never`, use the normal approval/automatic-review mode that allows this explicit delegation action.
 
-`WORKER` is not a label-only switch. In a loaded and trusted session, it is `DELEGATE` internally: the root is coordination-only, direct Bash/file-edit/local-function calls are denied by `PreToolUse`, and third-party work must return a real `delegate_worker` result with `execution`, `provider`, `model`, `threadId`, and `status`. A Web-panel state or a marker-only route check is not sufficient proof of Worker execution.
+`WORKER` is not a label-only switch. In a loaded and trusted session, it is `DELEGATE` internally: the root is coordination-only, direct Bash/file-edit/local-function calls are denied by `PreToolUse`, and third-party work must return a real `delegate_worker` result with `execution`, `provider`, `model`, `threadId`, `status`, and `taskId`. A Web-panel state or a marker-only route check is not sufficient proof of Worker execution. When a live result reports `reviewDue=true`, the root Main owns the decision: call `worker_extend` only after a substantive, safe progress check, otherwise call `worker_cancel`; never hand this control back to the Web user.
 
 The gateway preserves assistant turns that contain multiple parallel function calls as one Chat Completions `tool_calls` message. A failed provider turn is recorded as `worker.failed` and returned as an error; it is never reported as a completed Worker task.
 
@@ -131,6 +151,7 @@ The gateway preserves assistant turns that contain multiple parallel function ca
 
 - New API keys are encrypted with AES-256-GCM in the project data directory.
 - The gateway binds to loopback by default and requires a random local bearer token.
+- The Web password protects only this control plane. Logout clears the control-plane session and returns to the dedicated **登录控制面** page; it does not log out ChatGPT or change Codex OAuth.
 - The Web API is loopback-only by default. The Web control plane supports a salted scrypt password, HttpOnly SameSite sessions, login throttling, and password rotation. For public binding, set `CWD_REQUIRE_AUTH=1`, provide a bootstrap `CWD_WEB_TOKEN`, and put the service behind HTTPS.
 - Provider URLs reject embedded credentials and non-HTTP(S) schemes.
 - User-supplied custom `Authorization` headers are rejected.

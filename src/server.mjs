@@ -12,6 +12,7 @@ import { CodexConfigManager, CODEX_GATEWAY_PROVIDER_ID, inspectTopLevel, sameTop
 import { withCodexAppServer, resolveCodexBinary } from './app-server.mjs';
 import { executionPlan } from './policy.mjs';
 import { WebAuth, MIN_PASSWORD_LENGTH } from './web-auth.mjs';
+import { WorkerTaskManager, WORKER_MAX_TOTAL_TIMEOUT_MS, isTerminalTask, isWorkerTimeout, errorDetails, normalizeWorkerTimeout } from './worker-jobs.mjs';
 export { executionPlan } from './policy.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -25,6 +26,7 @@ export function createApp({ env = process.env, fetchImpl = fetch } = {}) {
   const vault = new SecretVault({ env });
   const webAuth = new WebAuth({ env });
   const gateway = new ResponsesGateway({ store, vault, fetchImpl });
+  const workerJobs = new WorkerTaskManager({ env });
   const port = Number(env.CWD_PORT || 8788);
   const host = env.CWD_HOST || '127.0.0.1';
   const codex = new CodexConfigManager({ env, gatewayBaseUrl: `http://127.0.0.1:${port}/v1` });
@@ -34,9 +36,40 @@ export function createApp({ env = process.env, fetchImpl = fetch } = {}) {
       const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
       if (req.method === 'POST' && url.pathname === '/v1/responses') return gateway.handle(req, res, await readJson(req));
       if (req.method === 'GET' && url.pathname === '/v1/models') return serveGatewayModels(req, res, { store, vault, fetchImpl, nativeCatalog: url.searchParams.has('client_version') });
+      if (req.method === 'POST' && url.pathname === '/internal/worker/start') {
+        if (!await authorizeInternal(req, store)) return sendJson(res, 401, { error: 'invalid internal token' });
+        const task = await startWorkerTask(await readJson(req), { store, env, codex, workerJobs });
+        return sendJson(res, task.taskId ? 202 : 200, task);
+      }
+      if (req.method === 'POST' && url.pathname.startsWith('/internal/worker/cancel/')) {
+        if (!await authorizeInternal(req, store)) return sendJson(res, 401, { error: 'invalid internal token' });
+        const taskId = decodeURIComponent(url.pathname.slice('/internal/worker/cancel/'.length));
+        const task = await cancelWorkerTask(taskId, await readJson(req), { store, workerJobs });
+        return task ? sendJson(res, 200, task) : sendJson(res, 404, { error: 'worker task not found', taskId });
+      }
+      if (req.method === 'POST' && url.pathname.startsWith('/internal/worker/extend/')) {
+        if (!await authorizeInternal(req, store)) return sendJson(res, 401, { error: 'invalid internal token' });
+        const taskId = decodeURIComponent(url.pathname.slice('/internal/worker/extend/'.length));
+        try {
+          const task = await extendWorkerTask(taskId, await readJson(req), { store, workerJobs });
+          return task ? sendJson(res, 200, task) : sendJson(res, 404, { error: 'worker task not found', taskId });
+        } catch (error) {
+          error.statusCode = error.statusCode || 409;
+          throw error;
+        }
+      }
+      if (req.method === 'GET' && url.pathname.startsWith('/internal/worker/status/')) {
+        if (!await authorizeInternal(req, store)) return sendJson(res, 401, { error: 'invalid internal token' });
+        const taskId = decodeURIComponent(url.pathname.slice('/internal/worker/status/'.length));
+        const task = await workerJobs.get(taskId);
+        return task ? sendJson(res, 200, task) : sendJson(res, 404, { error: 'worker task not found', taskId });
+      }
       if (req.method === 'POST' && url.pathname === '/internal/worker/run') {
         if (!await authorizeInternal(req, store)) return sendJson(res, 401, { error: 'invalid internal token' });
-        return sendJson(res, 200, await executeWorker(await readJson(req), { store, env, codex }));
+        const body = await readJson(req);
+        if (body.waitForCompletion === true) return sendJson(res, 200, await executeWorker(body, { store, env, codex, workerJobs }));
+        const task = await startWorkerTask(body, { store, env, codex, workerJobs });
+        return sendJson(res, task.taskId ? 202 : 200, task);
       }
       if (req.method === 'GET' && url.pathname === '/api/auth/status') return sendJson(res, 200, await authStatus({ req, env, host, webAuth }));
       if (req.method === 'POST' && url.pathname === '/api/auth/setup') {
@@ -127,16 +160,31 @@ export function createApp({ env = process.env, fetchImpl = fetch } = {}) {
           const body = await readJson(req);
           return sendJson(res, 200, await verifyCoexistence({ body, store, codex, env }));
         }
-        if (req.method === 'POST' && url.pathname === '/api/worker/run') return sendJson(res, 200, await executeWorker(await readJson(req), { store, env, codex }));
+        if (req.method === 'POST' && url.pathname === '/api/worker/start') {
+          const task = await startWorkerTask(await readJson(req), { store, env, codex, workerJobs });
+          return sendJson(res, task.taskId ? 202 : 200, task);
+        }
+        if (req.method === 'GET' && url.pathname.startsWith('/api/worker/status/')) {
+          const taskId = decodeURIComponent(url.pathname.slice('/api/worker/status/'.length));
+          const task = await workerJobs.get(taskId);
+          return task ? sendJson(res, 200, task) : sendJson(res, 404, { error: 'worker task not found', taskId });
+        }
+        if (req.method === 'POST' && url.pathname === '/api/worker/run') {
+          const body = await readJson(req);
+          if (body.waitForCompletion === true) return sendJson(res, 200, await executeWorker(body, { store, env, codex, workerJobs }));
+          const task = await startWorkerTask(body, { store, env, codex, workerJobs });
+          return sendJson(res, task.taskId ? 202 : 200, task);
+        }
         return sendJson(res, 404, { error: 'not found' });
       }
       return serveStatic(url.pathname, res);
     } catch (error) {
-      console.error(error);
-      return sendJson(res, 500, { error: error.message });
+      if (!error.statusCode || error.statusCode >= 500) console.error(error);
+      return sendJson(res, error.statusCode || 500, { error: error.message, code: error.code || null, taskId: error.taskId || null });
     }
   });
-  return { server, host, port, store };
+  server.on('close', () => workerJobs.close());
+  return { server, host, port, store, workerJobs };
 }
 
 async function authorizeInternal(req, store) {
@@ -154,12 +202,19 @@ async function serveGatewayModels(req, res, { store, vault, fetchImpl, nativeCat
   return sendJson(res, 200, { object: 'list', data: models.map((item) => ({ id: item.id, object: 'model', owned_by: item.ownedBy || state.provider.name || 'third-party' })) });
 }
 
-async function executeWorker(body, { store, env, codex }) {
+async function prepareWorker(body, { store }) {
   const state = await store.read();
-  const mode = body.mode || state.mode;
+  const mode = state.mode;
   const roleName = body.role || 'worker';
+  if (body.mode && body.mode !== state.mode) {
+    const error = new Error(`requested mode ${body.mode} does not match active Web mode ${state.mode}`);
+    error.code = 'ACTIVE_MODE_MISMATCH'; error.statusCode = 409; throw error;
+  }
   if (!MODES.has(mode) || !['worker', 'verifier'].includes(roleName)) throw new Error('invalid mode or worker role');
-  if (mode === 'MAIN') throw new Error('MAIN mode disables delegation');
+  if (mode === 'MAIN') {
+    const error = new Error('MAIN mode disables delegation');
+    error.code = 'MAIN_MODE_LOCKED'; error.statusCode = 409; throw error;
+  }
   if (!body.task?.trim()) throw new Error('task is required');
   const routes = activeRouting(state, mode);
   const route = routes[roleName];
@@ -168,37 +223,163 @@ async function executeWorker(body, { store, env, codex }) {
   const plan = executionPlan(main, route, roleName);
   if (plan.execution === 'native_subagent_required') {
     return {
+      kind: 'native',
       ...plan, mode, role: roleName, provider: route.provider, model: route.model,
       effort: route.effort || 'auto',
       instruction: `Use Codex native spawn_agent with agent_type=${plan.agentType} and model=${route.model}${route.effort && route.effort !== 'auto' ? ` and reasoning_effort=${route.effort}` : ''}. This route stays on the built-in OpenAI provider.`
     };
   }
-  if (route.provider === 'third_party') await ensureCodexIntegration({ store, codex });
-  const result = await withCodexAppServer((client) => client.runThread({
-    model: route.model,
-    modelProvider: route.provider === 'third_party' ? CODEX_GATEWAY_PROVIDER_ID : 'openai',
-    prompt: body.task,
-    cwd: body.cwd || process.cwd(),
-    sandbox: roleName === 'verifier' ? 'read-only' : (body.sandbox || 'workspace-write'),
-    effort: route.effort || 'auto',
-    developerInstructions: roleName === 'verifier' ? 'Verify independently. Prefer inspection and tests; do not modify implementation files.' : 'Execute the assigned implementation task and report concrete results.'
-  }), { env });
-  const completed = result.status === 'completed';
-  await store.audit(completed ? 'worker.completed' : 'worker.failed', {
+  return {
+    kind: 'app_server',
+    state,
     mode,
     role: roleName,
-    provider: route.provider,
-    model: route.model,
-    execution: plan.execution,
-    threadId: result.threadId,
-    status: result.status,
-    error: completed ? null : (result.turn?.error || result.error || null)
-  });
-  if (!completed) {
-    const detail = result.turn?.error?.message || result.error || `status=${result.status || 'unknown'}`;
-    throw new Error(`worker execution failed: ${detail}`);
+    route,
+    plan,
+    task: String(body.task),
+    cwd: body.cwd || process.cwd(),
+    sandbox: roleName === 'verifier' ? 'read-only' : (body.sandbox || 'workspace-write'),
+    timeoutMs: normalizeWorkerTimeout(body.timeoutMs)
+  };
+}
+
+function progressFromNotification(message) {
+  const method = String(message?.method || '');
+  const params = message?.params || {};
+  const item = params.item || params.itemSummary || {};
+  const details = { method, threadId: params.threadId, turnId: params.turn?.id, itemId: item.id, itemType: item.type, status: params.turn?.status || item.status, phase: params.phase };
+  if (method === 'thread/started') return { threadId: params.threadId, phase: 'thread_start', progress: 15, message: 'Codex App Server 线程已创建', event: { type: method, message: 'Codex App Server 线程已创建', details } };
+  if (method === 'turn/started') return { turnId: params.turn?.id || null, phase: 'turn_start', progress: 20, message: 'Worker 已提交任务，等待模型执行', event: { type: method, message: 'Worker 已提交任务', details } };
+  if (method.includes('item/started')) return { phase: 'executing', progress: 35, message: `Worker 正在执行：${item.type || '任务步骤'}`, event: { type: method, message: `开始：${item.type || '任务步骤'}`, details } };
+  if (method.includes('item/completed')) return { phase: 'executing', progress: 70, message: `Worker 已完成：${item.type || '任务步骤'}`, event: { type: method, message: `完成：${item.type || '任务步骤'}`, details } };
+  if (method === 'turn/completed') return { phase: 'completion', progress: 95, message: 'Worker 已收到完成事件，正在整理结果', event: { type: method, message: '收到完成事件', details } };
+  if (method) return { phase: 'running', progress: 25, message: `Worker 收到进度事件：${method}`, event: { type: method, message: `收到：${method}`, details } };
+  return null;
+}
+
+async function startWorkerTask(body, { store, env, codex, workerJobs }) {
+  const prepared = await prepareWorker(body, { store });
+  if (prepared.kind === 'native') {
+    return { ...prepared, status: 'delegation_required', taskId: null, message: '当前官方路由需要由主控 Codex 使用 native spawn_agent 执行。' };
   }
-  return { ...plan, mode, role: roleName, provider: route.provider, model: route.model, ...result };
+  const { mode, role, route, plan, task, cwd, sandbox, timeoutMs } = prepared;
+  return workerJobs.start({ mode, role, execution: plan.execution, provider: route.provider, model: route.model, effort: route.effort || 'auto', cwd, timeoutMs }, async ({ taskId, report, registerCancel, registerExtend }) => {
+    const auditBase = { taskId, mode, role, provider: route.provider, model: route.model, execution: plan.execution, effort: route.effort || 'auto' };
+    let unregisterCancel = () => {};
+    let unregisterExtend = () => {};
+    let activeClient = null;
+    let turnTimeoutMs = timeoutMs;
+    try {
+      unregisterExtend = registerExtend((extraMs) => {
+        turnTimeoutMs += extraMs;
+        return activeClient ? activeClient.extendTurnTimeout(extraMs) : { extraMs, pending: true, deadlineAt: null };
+      });
+      if (route.provider === 'third_party') {
+        await report({ phase: 'integration', progress: 8, message: '正在确认 namespaced Codex provider 集成', event: { type: 'integration.start', message: '确认 Codex provider 集成' } });
+        await ensureCodexIntegration({ store, codex });
+        await report({ phase: 'integration', progress: 12, message: 'Codex provider 集成已确认', event: { type: 'integration.completed', message: 'Codex provider 集成已确认' } });
+      }
+      const result = await withCodexAppServer((client) => {
+        activeClient = client;
+        unregisterCancel = registerCancel((reason) => client.abort(reason));
+        return client.runThread({
+          model: route.model,
+          modelProvider: route.provider === 'third_party' ? CODEX_GATEWAY_PROVIDER_ID : 'openai',
+          prompt: task,
+          cwd,
+          sandbox,
+          effort: route.effort || 'auto',
+          timeoutMs: turnTimeoutMs,
+          onProgress: (message) => {
+            const progress = progressFromNotification(message);
+            if (progress) void report(progress);
+          },
+          developerInstructions: role === 'verifier' ? 'Verify independently. Prefer inspection and tests; do not modify implementation files.' : 'Execute the assigned implementation task and report concrete results.'
+        });
+      }, { env });
+      if (result.status !== 'completed') {
+        const error = new Error(`worker execution failed: status=${result.status || 'unknown'}`);
+        error.code = 'WORKER_FAILED';
+        error.threadId = result.threadId;
+        throw error;
+      }
+      const output = { ...plan, mode, role, provider: route.provider, model: route.model, taskId, ...result };
+      await store.audit('worker.completed', { ...auditBase, threadId: result.threadId, status: result.status, error: null }).catch(() => {});
+      return output;
+    } catch (error) {
+      if (error?.code !== 'WORKER_CANCELLED') await store.audit('worker.failed', { ...auditBase, threadId: error.threadId || null, status: isWorkerTimeout(error) ? 'timed_out' : 'failed', error: errorDetails(error) }).catch(() => {});
+      throw error;
+    } finally {
+      unregisterCancel();
+      unregisterExtend();
+      activeClient = null;
+    }
+  });
+}
+
+async function cancelWorkerTask(taskId, body = {}, { store, workerJobs }) {
+  const before = await workerJobs.get(taskId);
+  if (!before) return null;
+  const reason = String(body.reason || 'cancelled by operator').trim().slice(0, 500) || 'cancelled by operator';
+  const task = await workerJobs.cancel(taskId, reason);
+  if (task?.status === 'cancelled' && before.status !== 'cancelled') {
+    await store.audit('worker.cancelled', {
+      taskId,
+      mode: task.mode,
+      role: task.role,
+      provider: task.provider,
+      model: task.model,
+      execution: task.execution,
+      threadId: task.threadId,
+      turnId: task.turnId,
+      reason
+    }).catch(() => {});
+  }
+  return task;
+}
+
+async function extendWorkerTask(taskId, body = {}, { store, workerJobs }) {
+  const task = await workerJobs.get(taskId);
+  if (!task) return null;
+  const extended = await workerJobs.extend(taskId, {
+    extraMs: body.extraMs,
+    reason: body.reason
+  });
+  if (extended?.extensionCount !== task.extensionCount) {
+    await store.audit('worker.extended', {
+      taskId,
+      mode: extended.mode,
+      role: extended.role,
+      provider: extended.provider,
+      model: extended.model,
+      execution: extended.execution,
+      extraMs: Date.parse(extended.deadlineAt) - Date.parse(task.deadlineAt),
+      extensionCount: extended.extensionCount,
+      reviewAt: extended.reviewAt,
+      deadlineAt: extended.deadlineAt,
+      reason: String(body.reason || '主控确认 Worker 方向正常，续期继续执行').slice(0, 500)
+    }).catch(() => {});
+  }
+  return extended;
+}
+
+async function executeWorker(body, { store, env, codex, workerJobs }) {
+  const started = await startWorkerTask(body, { store, env, codex, workerJobs });
+  if (!started.taskId) return started;
+  const waited = await workerJobs.wait(started.taskId, { timeoutMs: WORKER_MAX_TOTAL_TIMEOUT_MS + 5000 });
+  if (!waited || !isTerminalTask(waited)) {
+    const error = new Error(`Worker task is still running; taskId=${started.taskId}`);
+    error.code = 'WORKER_TIMEOUT';
+    error.taskId = started.taskId;
+    throw error;
+  }
+  if (waited.status !== 'completed') {
+    const error = new Error(waited.error?.message || `Worker task ${waited.status}`);
+    error.code = waited.status === 'timed_out' ? 'WORKER_TIMEOUT' : waited.status === 'cancelled' ? 'WORKER_CANCELLED' : 'WORKER_FAILED';
+    error.taskId = started.taskId;
+    throw error;
+  }
+  return { ...waited.result, taskId: started.taskId, task: waited };
 }
 
 async function verifyCoexistence({ body, store, codex, env }) {

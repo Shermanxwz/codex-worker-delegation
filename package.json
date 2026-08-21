@@ -3,7 +3,7 @@
   "version": "3.0.0",
   "private": true,
   "type": "module",
-  "description": "Native Codex delegation control plane for ChatGPT Linux with verified official/third-party coexistence and per-model Responses compatibility bridging.",
+  "description": "Codex Linux control plane for explicit official/third-party thread routing, coexistence checks, and per-model Responses compatibility bridging.",
   "engines": {"node": ">=20"},
   "scripts": {
     "start": "node src/server.mjs",

@@ -1,7 +1,7 @@
 {
   "name": "codex-worker-delegation",
   "version": "3.0.0",
-  "description": "Codex-native delegation and verified multi-provider coexistence for ChatGPT Linux.",
+  "description": "Explicit official/third-party thread routing and coexistence checks for ChatGPT Linux.",
   "author": {
     "name": "Shermanxwz",
     "url": "https://github.com/Shermanxwz"
@@ -22,7 +22,7 @@
   "hooks": "./hooks/hooks.json",
   "interface": {
     "displayName": "Codex Worker Delegation",
-    "shortDescription": "Verified Codex multi-provider workers",
+    "shortDescription": "Provider-isolated Codex workers",
     "longDescription": "Control per-role provider/model routing from a local Web panel while preserving official ChatGPT authentication. Built-in OpenAI routes may use native subagents; third-party routes use explicit App Server threads to avoid current custom-provider subagent transport defects.",
     "developerName": "Shermanxwz",
     "category": "Developer Tools",

@@ -13,7 +13,13 @@ import { codexHome } from '../src/paths.mjs';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MARKETPLACE = 'codex-worker-delegation-local';
 const SEAL_MARKER = 'CWD_PRODUCTION_SEAL_OK';
+const SEAL_HTTP_TIMEOUT_MS = Number(process.env.CWD_SEAL_HTTP_TIMEOUT_MS || 180000);
+const SEAL_APP_SERVER_TIMEOUT_MS = Number(process.env.CWD_SEAL_APP_SERVER_TIMEOUT_MS || 180000);
 const checks = [];
+
+function phase(name) {
+  process.stderr.write(`[seal] ${name}\n`);
+}
 
 function redact(value) {
   let text;
@@ -65,7 +71,8 @@ async function requestJson(base, env, pathname, method = 'GET', body) {
   const response = await fetch(`${base}${pathname}`, {
     method,
     headers,
-    body: body === undefined ? undefined : JSON.stringify(body)
+    body: body === undefined ? undefined : JSON.stringify(body),
+    signal: AbortSignal.timeout(SEAL_HTTP_TIMEOUT_MS)
   });
   const text = await response.text();
   let value;
@@ -95,23 +102,28 @@ async function run() {
   let app;
 
   try {
+    phase('official runtime');
     const binaryInfo = command([binary, '--version'], env);
     record('official Codex runtime', binaryInfo.ok, binaryInfo.ok ? binaryInfo.output : `could not execute ${binary}: ${binaryInfo.output}`);
     const desktopPath = codexBinaryCandidates(env).find((candidate) => candidate === '/usr/lib/chatgpt/resources/codex');
     const desktopPresent = desktopPath && await fs.access(desktopPath).then(() => true).catch(() => false);
     record('ChatGPT Linux bundled runtime discovery', desktopPresent, desktopPresent ? desktopPath : `packaged path not found; resolved ${binary}`);
 
+    phase('repository checks');
     const checkResult = command([process.execPath, 'scripts/check.mjs'], env);
     record('repository static/check contract', checkResult.ok, checkResult.output);
     if (!checkResult.ok) throw new Error('repository check failed');
     const testFiles = (await fs.readdir(path.join(ROOT, 'test'))).filter((name) => name.endsWith('.test.mjs')).sort().map((name) => path.join('test', name));
+    phase('repository tests');
     const testResult = command([process.execPath, '--test', ...testFiles], env);
     record('repository test suite', testResult.ok, testResult.output);
     if (!testResult.ok) throw new Error('repository test suite failed');
 
+    phase('official plugin installation');
     const pluginResult = command(['bash', 'scripts/install.sh'], env);
     record('official Codex plugin installation', pluginResult.ok, pluginResult.output);
     if (!pluginResult.ok) throw new Error('official Codex plugin installation failed');
+    phase('plugin verification');
     const pluginList = command([binary, 'plugin', 'list', '--json'], env);
     const pluginInstalled = pluginList.ok && pluginList.output.includes(`codex-worker-delegation@${MARKETPLACE}`);
     record('plugin is installed and enabled', pluginInstalled, pluginInstalled ? `codex-worker-delegation@${MARKETPLACE}` : pluginList.output);
@@ -123,16 +135,20 @@ async function run() {
     record('encrypted New API provider is configured', thirdPartyConfigured, thirdPartyConfigured ? beforeState.provider.name || 'configured' : 'configure the provider in the Web panel first');
     if (!thirdPartyConfigured) throw new Error('encrypted New API provider is not configured');
 
+    phase('control plane startup');
     app = createApp({ env });
     await new Promise((resolve, reject) => { app.server.once('error', reject); app.server.listen(port, '127.0.0.1', resolve); });
     const base = `http://127.0.0.1:${port}`;
+    phase('control plane health');
     const health = await requestJson(base, env, '/api/health');
     record('loopback control plane health', health?.ok === true, `${health?.host}:${health?.port}`);
 
+    phase('namespaced Codex integration');
     const installed = await requestJson(base, env, '/api/codex/install', 'POST', {});
     record('namespaced Codex provider installed without selector switching', installed?.installed === true, installed?.installed ? 'installed' : installed);
     if (installed?.installed !== true) throw new Error('Codex integration install did not complete');
 
+    phase('official and third-party catalog');
     const catalog = await requestJson(base, env, '/api/catalog');
     const officialAccountType = catalog?.official?.account?.type || null;
     record('official ChatGPT account is readable', catalog?.official?.ok === true && officialAccountType === 'chatgpt', { type: officialAccountType, error: catalog?.official?.error || null });
@@ -140,7 +156,8 @@ async function run() {
     if (catalog?.official?.ok !== true || officialAccountType !== 'chatgpt') throw new Error('official ChatGPT account proof failed');
     if (catalog?.thirdParty?.ok !== true || !catalog.thirdParty.models?.length) throw new Error('third-party model discovery failed');
 
-    const nativePickerModels = await withCodexAppServer((client) => client.listModels({ includeHidden: true }), { env });
+    phase('official model picker');
+    const nativePickerModels = await withCodexAppServer((client) => client.listModels({ includeHidden: true }), { env, overallTimeoutMs: SEAL_APP_SERVER_TIMEOUT_MS });
     const nativePickerIds = new Set(nativePickerModels.map((model) => model?.model || model?.id).filter(Boolean));
     const discoveredThirdPartyIds = [...new Set(catalog.thirdParty.models.map((model) => model?.id).filter(Boolean))];
     const currentOfficialIds = new Set(catalog.official.models.map((model) => model?.model || model?.id).filter(Boolean));
@@ -153,6 +170,7 @@ async function run() {
       thirdPartyIdsInOfficialPicker: pickerThirdPartyIds
     });
 
+    phase('third-party model connectivity matrix');
     const connectivity = await requestJson(base, env, '/api/provider/connectivity', 'POST', {});
     const connectivityResults = Array.isArray(connectivity?.results) ? connectivity.results : [];
     const connectivityPassed = connectivityResults.filter((result) => result.ok === true);
@@ -171,6 +189,7 @@ async function run() {
     });
     if (!connectivityResults.length) throw new Error('third-party connectivity matrix returned no results');
 
+    phase('route selection');
     const state = await store.read();
     const routeCandidates = [];
     for (const mode of ['DELEGATE', 'AUTO']) {
@@ -180,7 +199,8 @@ async function run() {
       }
     }
     const coexistenceModel = routeCandidates[0]?.model || catalog.thirdParty.models[0]?.id;
-    const coexistence = await requestJson(base, env, '/api/verify/coexistence', 'POST', { model: coexistenceModel, cwd: ROOT, timeoutMs: 180000 });
+    phase('real official and third-party coexistence');
+    const coexistence = await requestJson(base, env, '/api/verify/coexistence', 'POST', { model: coexistenceModel, cwd: ROOT, timeoutMs: SEAL_APP_SERVER_TIMEOUT_MS });
     record('real official/New API coexistence proof', coexistence?.ok === true && coexistence?.thirdParty?.markerObserved === true, {
       ok: coexistence?.ok,
       markerObserved: coexistence?.thirdParty?.markerObserved,
@@ -193,10 +213,13 @@ async function run() {
 
     const workerRoute = routeCandidates.find((candidate) => candidate.role === 'worker');
     if (!workerRoute) throw new Error('configure a third-party Worker model in AUTO or DELEGATE mode before sealing');
+    phase('real third-party Worker completion');
     const worker = await requestJson(base, env, '/api/worker/run', 'POST', {
       mode: workerRoute.mode,
       role: 'worker',
-      task: `Reply exactly with ${SEAL_MARKER}. Do not use tools.`
+      task: `Reply exactly with ${SEAL_MARKER}. Do not use tools.`,
+      timeoutMs: Math.min(SEAL_APP_SERVER_TIMEOUT_MS, 120000),
+      waitForCompletion: true
     });
     record('real third-party Worker delegation', worker?.provider === 'third_party' && worker?.status === 'completed' && worker?.output?.includes(SEAL_MARKER), {
       mode: workerRoute.mode,
@@ -207,6 +230,7 @@ async function run() {
       threadId: worker?.threadId
     });
 
+    phase('authentication and selector preservation');
     const afterAuth = await fileSnapshot(authFile);
     const afterSelectors = inspectTopLevel(await configManager.read());
     record('ChatGPT auth.json is byte-for-byte unchanged', beforeAuth.exists === afterAuth.exists && beforeAuth.sha256 === afterAuth.sha256, { existed: beforeAuth.exists, sha256Unchanged: beforeAuth.sha256 === afterAuth.sha256 });
@@ -224,10 +248,22 @@ try {
 }
 
 const passed = checks.length > 0 && checks.every((check) => check.ok);
-console.log(JSON.stringify({
+const report = {
   project: 'codex-worker-delegation',
   report: 'production-seal',
   checks,
   status: passed ? 'SEALED' : 'NOT_SEALED'
-}, null, 2));
+};
+if (process.env.CWD_SEAL_COMPACT === '1') {
+  console.log(JSON.stringify({
+    project: report.project,
+    report: report.report,
+    status: report.status,
+    totalChecks: checks.length,
+    passedChecks: checks.filter((check) => check.ok).length,
+    failedChecks: checks.filter((check) => !check.ok).map((check) => ({ name: check.name, detail: check.detail }))
+  }, null, 2));
+} else {
+  console.log(JSON.stringify(report, null, 2));
+}
 if (!passed) process.exitCode = 1;

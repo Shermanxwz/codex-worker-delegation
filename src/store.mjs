@@ -101,7 +101,7 @@ export function setRoutingMode(state, mode, roles = {}) {
 }
 
 export class StateStore {
-  constructor({ env = process.env } = {}) { this.env = env; this.file = statePath(env); }
+  constructor({ env = process.env } = {}) { this.env = env; this.file = statePath(env); this.gatewayTokenPromise = null; }
 
   async read() {
     try { return normalizeState(JSON.parse(await fs.readFile(this.file, 'utf8'))); }
@@ -124,13 +124,32 @@ export class StateStore {
   }
 
   async ensureGatewayToken() {
-    const file = gatewayTokenPath(this.env);
-    await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-    try { return (await fs.readFile(file, 'utf8')).trim(); }
-    catch (e) { if (e.code !== 'ENOENT') throw e; }
-    const token = crypto.randomBytes(32).toString('base64url');
-    await atomicWrite(file, `${token}\n`);
-    return token;
+    if (this.gatewayTokenPromise) return this.gatewayTokenPromise;
+    this.gatewayTokenPromise = (async () => {
+      const file = gatewayTokenPath(this.env);
+      await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+      try {
+        const existing = (await fs.readFile(file, 'utf8')).trim();
+        if (existing) return existing;
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+      const token = crypto.randomBytes(32).toString('base64url');
+      try {
+        const handle = await fs.open(file, 'wx', 0o600);
+        try { await handle.writeFile(`${token}\n`); }
+        finally { await handle.close(); }
+        await fs.chmod(file, 0o600).catch(() => {});
+        return token;
+      } catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+        const existing = (await fs.readFile(file, 'utf8')).trim();
+        if (!existing) throw new Error('gateway token file was created but is empty');
+        return existing;
+      }
+    })();
+    try { return await this.gatewayTokenPromise; }
+    finally { this.gatewayTokenPromise = null; }
   }
 
   async audit(event, details = {}) {

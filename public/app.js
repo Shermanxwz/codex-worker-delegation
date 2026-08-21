@@ -4,8 +4,8 @@ const MODES = ['AUTO', 'DELEGATE', 'MAIN'];
 const VISIBLE_ROLES = { AUTO: ['main'], DELEGATE: ['main', 'worker'], MAIN: ['main'] };
 const MODE_LABELS = { AUTO: 'AUTO', DELEGATE: 'WORKER', MAIN: 'MAIN' };
 const MODE_HELP = {
-  AUTO: '自动协调：只选择一个主模型，Worker 和 Verifier 自动沿用该模型。',
-  DELEGATE: 'Worker 模式：Main 负责协调，Worker 负责执行；Verifier 作为内部只读检查自动继承 Worker。',
+  AUTO: '自动协调：只选择一个主模型，Worker 和 Verifier 继承该模型；是否实际委派由任务决定。',
+  DELEGATE: 'Worker 模式：Main 负责协调，Worker 负责执行；真实任务通过 delegate_worker 或路由测试启动。Verifier 是只读验证角色，调用时继承 Worker 的模型与思考强度。',
   MAIN: 'Main 模式：只运行主线程，禁用 Worker delegation。'
 };
 let state = null;
@@ -14,6 +14,7 @@ let coexistenceProof = null;
 let authState = null;
 let currentPage = 'dashboard';
 const modelTestResults = new Map();
+const WORKER_TERMINAL_STATES = new Set(['completed', 'failed', 'timed_out', 'cancelled', 'delegation_required']);
 const GENERIC_THIRD_PARTY_EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh', 'max'];
 const EFFORT_LABELS = { auto: '模型 / 上游默认', none: 'none · 不额外推理', low: 'low · 快速', medium: 'medium · 平衡', high: 'high · 深度', xhigh: 'xhigh · 更深', max: 'max · 最大', ultra: 'ultra · 自动协作' };
 
@@ -145,7 +146,7 @@ function syncRouteEffort(mode, role) {
   select.innerHTML = effortOptions(provider, model, previous);
   if (!Array.from(select.options).some((option) => option.value === previous)) select.value = 'auto';
 }
-function routeKind(mode, role) { if (role === 'main') return mode === 'AUTO' ? 'Primary model' : 'Root Thread'; return 'Worker Thread'; }
+function routeKind(mode, role) { if (role === 'main') return mode === 'AUTO' ? 'Primary model' : 'Root Thread'; return role === 'verifier' ? 'Read-only Verifier' : 'Worker Thread'; }
 function updateKinds() { for (const mode of MODES) for (const role of VISIBLE_ROLES[mode]) { const node = $(`kind-${mode}-${role}`); if (node) node.textContent = routeKind(mode, role); } }
 
 function setDot(id, ok) { const node = $(id); if (!node) return; node.classList.toggle('ok', Boolean(ok)); node.classList.toggle('bad', !ok); }
@@ -245,7 +246,45 @@ $('probe').onclick = async () => { try { $('providerResult').textContent = '正�
 $('testAllModels').onclick = () => runConnectivity();
 $('install').onclick = async () => { try { $('integrationState').textContent = '正在安装 / 刷新 namespaced provider…'; await api('/api/codex/install', { method: 'POST' }); coexistenceProof = null; await refresh(); navigate('integration'); } catch (error) { $('integrationState').textContent = error.stack || error.message; } };
  $('verifyCoexistence').onclick = async () => { try { const model = selectedThirdPartyModel() || catalog.thirdParty?.models?.[0]?.id; if (!model) throw new Error('当前没有可用的第三方模型'); $('coexistProof').textContent = '正在运行真实共存证明…'; coexistenceProof = await api('/api/verify/coexistence', { method: 'POST', body: JSON.stringify({ model }) }); $('coexistProof').textContent = JSON.stringify(coexistenceProof, null, 2); renderIntegration(); renderStatus(); } catch (error) { coexistenceProof = { ok: false, error: error.message }; $('coexistProof').textContent = JSON.stringify(coexistenceProof, null, 2); renderStatus(); } };
-$('runWorker').onclick = async () => { try { $('runResult').textContent = '正在运行真实 Codex 路由…'; $('runResult').textContent = JSON.stringify(await api('/api/worker/run', { method: 'POST', body: JSON.stringify({ role: $('testRole').value, task: $('testTask').value }) }), null, 2); } catch (error) { $('runResult').textContent = error.stack || error.message; } };
+function workerTaskText(task) {
+  const events = (task.events || []).slice(-10).map((event) => {
+    const details = event.details ? ` · ${JSON.stringify(event.details)}` : '';
+    return `${event.at} · ${event.type} · ${event.message}${details}`;
+  }).join('\n');
+  return [
+    `任务 ID：${task.taskId || '无（当前路由需要主控 native spawn_agent）'}`,
+    `状态：${task.status || 'unknown'} · 阶段：${task.phase || '—'} · 进度：${task.progress ?? 0}%`,
+    `模型：${task.provider || '—'} / ${task.model || '—'} · 思考强度：${task.effort || 'auto'}`,
+    `租约：${task.deadlineAt || '—'} · 主控观察点：${task.reviewAt || '—'}${task.reviewDue ? ' · 等待主控决定续期或终止' : ''} · 已续期：${task.extensionCount || 0} 次`,
+    `最近心跳：${task.lastHeartbeatAt || '—'}`,
+    `最近进度事件：${task.lastProgressAt || '—'}`,
+    task.cancelRequestedAt ? `取消请求：${task.cancelRequestedAt} · ${task.cancelReason || '—'}` : '',
+    `消息：${task.message || '—'}`,
+    task.error ? `错误：${task.error.code || task.error.name || 'worker_error'} · ${task.error.message}` : '',
+    task.output ? `\n输出：\n${task.output}` : '',
+    events ? `\n最近事件：\n${events}` : ''
+  ].filter(Boolean).join('\n');
+}
+async function watchWorkerTask(taskId) {
+  while (true) {
+    const task = await api(`/api/worker/status/${encodeURIComponent(taskId)}`);
+    $('runResult').textContent = workerTaskText(task);
+    if (WORKER_TERMINAL_STATES.has(task.status)) return task;
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+}
+ $('runWorker').onclick = async () => {
+  try {
+    $('runWorker').disabled = true;
+    $('runResult').textContent = '正在创建 Worker 任务…';
+    const started = await api('/api/worker/start', { method: 'POST', body: JSON.stringify({ role: $('testRole').value, task: $('testTask').value }) });
+    if (!started.taskId) { $('runResult').textContent = workerTaskText(started); return; }
+    sessionStorage.setItem('cwd-last-worker-task', started.taskId);
+    $('runResult').textContent = workerTaskText(started);
+    await watchWorkerTask(started.taskId);
+  } catch (error) { $('runResult').textContent = error.stack || error.message; }
+  finally { $('runWorker').disabled = false; }
+ };
 $('setupPasswordButton').onclick = async () => { try { const password = $('setupPassword').value; const confirmPassword = $('setupPasswordConfirm').value; $('authResult').textContent = '正在设置密码…'; await api('/api/auth/setup', { method: 'POST', body: JSON.stringify({ password, confirmPassword }) }); $('setupPassword').value = ''; $('setupPasswordConfirm').value = ''; $('authResult').textContent = '密码已设置，已自动登录。'; await boot(); } catch (error) { $('authResult').textContent = error.message; } };
 $('loginPageButton').onclick = async () => { try { $('loginPageResult').textContent = '正在登录…'; await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ password: $('loginPagePassword').value }) }); $('loginPagePassword').value = ''; $('loginPageResult').textContent = '登录成功。'; await boot(); if (authState?.authenticated) navigate('dashboard'); } catch (error) { $('loginPageResult').textContent = error.message; } };
 $('logoutButton').onclick = async () => { try { await api('/api/auth/logout', { method: 'POST' }); authState = null; await refreshAuth(); navigate('login'); } catch (error) { $('authResult').textContent = error.message; } };

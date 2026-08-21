@@ -56,7 +56,7 @@
             <article class="summary-card"><span class="summary-kicker">ACCESS</span><b id="dashboardIntegration">检测中…</b><p class="muted">密码只保护控制面，不接触 ChatGPT OAuth。</p><a href="#security" data-page-link="security" class="text-link">管理访问保护 →</a></article>
           </div>
           <div class="card dashboard-card"><div class="section-head"><div><h2>从这里开始</h2><p class="muted">第一次使用建议按顺序完成访问保护、New API 配置、路由选择，然后安装 Codex 原生集成。</p></div></div><div class="quick-links"><a href="#security" data-page-link="security"><strong>01</strong><span>设置访问密码<small>首次设置密码并登录</small></span></a><a href="#provider" data-page-link="provider"><strong>02</strong><span>连接 New API<small>保存上游地址与密钥</small></span></a><a href="#routing" data-page-link="routing"><strong>03</strong><span>选择模型路由<small>AUTO / WORKER / MAIN</small></span></a><a href="#integration" data-page-link="integration"><strong>04</strong><span>安装并验收<small>验证官方与第三方共存</small></span></a></div></div>
-          <div class="notice"><strong>关于 ChatGPT 里的模型列表</strong><span>本控制面支持官方线程与 New API 线程同时工作；但官方 ChatGPT 的 openai 模型下拉框由 Codex 原生维护，不能从插件侧安全地把第三方 ID 合并进去。第三方通过独立 provider 线程和本地路由使用，官方列表与 OAuth 保持原样。</span></div>
+          <div class="notice"><strong>关于 ChatGPT 里的模型列表</strong><span>本控制面支持官方线程与 New API 线程同时工作；但官方 ChatGPT 的 <code>openai</code> 模型下拉框由 Codex 原生维护，当前模型条目没有第三方 provider 绑定。只把第三方 ID 塞进目录会出现“看得见、选中后仍走官方 provider”的错误路由，因此第三方通过独立 provider 线程和本地路由使用，官方列表与 OAuth 保持原样。</span></div>
         </section>
 
         <section class="page" data-page="security" hidden>
@@ -73,12 +73,12 @@
         <section class="page" data-page="provider" hidden>
           <div class="page-heading"><div><p class="eyebrow">PROVIDER</p><h1>New API 配置</h1><p class="lead">第三方密钥写入本项目加密 vault。Codex 只获得本地 gateway token，不会读取或替换 ChatGPT 的 auth.json。</p></div></div>
           <div class="card"><div class="form-grid provider-grid"><label>Base URL<input id="baseUrl" placeholder="https://api.example.com/v1"></label><label>API Key<input id="apiKey" type="password" autocomplete="new-password" placeholder="首次配置或更换时填写"></label><label>协议<select id="protocol"><option value="auto">Auto：优先 Responses，不支持时回退 Chat</option><option value="responses">Responses</option><option value="chat">Chat Completions bridge</option></select></label></div><div class="actions"><button id="saveProvider">保存 New API</button><button id="probe" class="secondary">探测当前模型协议</button></div><pre id="providerResult" class="compact"></pre></div>
-          <div class="card provider-explainer"><h2>模型会出现在哪里？</h2><p class="muted">New API 模型会出现在本控制面的路由和连通性列表中，并通过 <code>codex_worker_gateway</code> 的隔离线程执行。原生 Codex 的自定义 provider 目录也提供兼容格式；但它仍是独立 provider，不能混进官方 <code>openai</code> 模型下拉框。这样才能保留官方 provider 与登录状态不变。</p><div class="inline-links"><a href="#connectivity" data-page-link="connectivity">去测试模型 →</a><a href="#integration" data-page-link="integration">查看 Codex 集成 →</a></div></div>
+          <div class="card provider-explainer"><h2>模型会出现在哪里？</h2><p class="muted">New API 模型会出现在本控制面的路由和连通性列表中，并通过 <code>codex_worker_gateway</code> 的隔离线程执行。原生 Codex 的自定义 provider 目录也提供兼容格式，但它仍是独立 provider，当前不能合法混进官方 <code>openai</code> 模型下拉框。这样才能保留官方 provider 与登录状态不变。</p><div class="inline-links"><a href="#connectivity" data-page-link="connectivity">去测试模型 →</a><a href="#integration" data-page-link="integration">查看 Codex 集成 →</a></div></div>
         </section>
 
         <section class="page" data-page="routing" hidden>
-          <div class="page-heading"><div><p class="eyebrow">ROUTING</p><h1>模型路由</h1><p class="lead">只暴露真正有意义的选择：AUTO 一个模型，WORKER 两个模型，MAIN 一个模型。每个模型都可以单独设定思考强度，并同步到 Codex 的原生 turn/start。</p></div><button id="saveRouting">保存路由</button></div>
-          <div class="card"><div class="modes"><button data-mode="AUTO">AUTO</button><button data-mode="DELEGATE">WORKER</button><button data-mode="MAIN">MAIN</button></div><p id="modeHelp" class="muted"></p><div id="routing"></div><div class="legend"><span><b>AUTO</b>：一个主模型，Worker / Verifier 自动沿用</span><span><b>WORKER</b>：Main 协调 + Worker 执行</span><span><b>MAIN</b>：只运行主线程</span><span><b>思考强度</b>：模型默认或显式 effort；第三方只转发网页明确选择的值</span></div><pre id="routingResult" class="compact"></pre></div>
+          <div class="page-heading"><div><p class="eyebrow">ROUTING</p><h1>模型路由</h1><p class="lead">只暴露真正有意义的选择：AUTO 一个模型，WORKER 两个模型，MAIN 一个模型。选择模式不会自动启动任务；真实委派发生时才会按这里的路由执行。每个模型都可以单独设定思考强度。</p></div><button id="saveRouting">保存路由</button></div>
+          <div class="card"><div class="modes"><button data-mode="AUTO">AUTO</button><button data-mode="DELEGATE">WORKER</button><button data-mode="MAIN">MAIN</button></div><p id="modeHelp" class="muted"></p><div id="routing"></div><div class="legend"><span><b>AUTO</b>：一个主模型，Worker / Verifier 继承主模型</span><span><b>WORKER</b>：Main 协调 + Worker 执行；真实任务才启动</span><span><b>MAIN</b>：只运行主线程，服务端拒绝任何 Worker / Verifier 请求</span><span><b>Verifier</b>：Worker 路由的只读验证角色，调用时继承 Worker 的第三方模型与思考强度，不单独选模型</span><span><b>思考强度</b>：auto 不发送 effort；显式值用于新线程；官方 Main 显式值还会同步 Codex 默认强度，第三方只转发网页明确选择的值</span></div><pre id="routingResult" class="compact"></pre></div>
         </section>
 
         <section class="page" data-page="connectivity" hidden>
@@ -87,10 +87,11 @@
         </section>
 
         <section class="page" data-page="integration" hidden>
-          <div class="page-heading"><div><p class="eyebrow">CODEX NATIVE</p><h1>Codex 原生集成</h1><p class="lead">安装 namespaced provider 与 worker / verifier roles，然后用真实线程证明官方 ChatGPT 和 New API 同时可用。</p></div><button id="install">安装 / 刷新</button></div>
+          <div class="page-heading"><div><p class="eyebrow">CODEX NATIVE</p><h1>Codex 原生集成</h1><p class="lead">安装 namespaced provider 与 worker / verifier roles；New API 通过显式 provider-isolated App Server 线程运行，再用真实线程证明官方 ChatGPT 和 New API 同时可用。</p></div><button id="install">安装 / 刷新</button></div>
           <div class="card"><div id="integrationState" class="integration-status">正在读取集成状态…</div><div class="actions"><button id="verifyCoexistence">真实共存验收</button></div><pre id="coexistProof" class="compact"></pre></div>
+          <div class="notice"><strong>共存证明与严格封存不是一回事</strong><span>“真实共存验收”只证明官方账号和一个第三方线程可以同时完成；严格生产封存还要求所有发现的 New API 模型连通，并要求官方 Codex picker 真正包含第三方独有 ID。任一硬门槛未满足时，封存脚本会保留 <code>NOT_SEALED</code>。</span></div>
           <div class="card"><h2>原生 Codex 模型可见性</h2><p id="nativeVisibility" class="muted">正在比较官方 model/list 与 New API /v1/models…</p><div class="notice"><strong>这里显示真实能力边界</strong><span>自定义 provider 可以通过显式 <code>modelProvider</code> 的 App Server 线程运行；但官方模型条目没有 provider 绑定字段。把第三方 ID 只塞进官方 catalog 会造成“看得见、选中后仍走 openai”的错误路由，因此验收不会把这种伪合并标为成功。</span></div></div>
-          <div class="card"><h2>真实路由测试</h2><div class="test-grid"><label>测试任务<textarea id="testTask" rows="4">检查当前项目并只返回一行：WORKER_ROUTE_OK</textarea></label><label>测试角色<select id="testRole"><option value="worker">Worker</option><option value="verifier">Verifier（只读）</option></select></label></div><div class="actions"><button id="runWorker" class="secondary">运行当前模式路由</button></div><pre id="runResult"></pre><pre id="status"></pre></div>
+          <div class="card"><h2>真实路由测试</h2><p class="muted">任务会先生成一个可查询的任务 ID；执行过程中 Web 只读显示阶段、进度、租约、主控观察点、最近心跳和事件。主控会通过 MCP 监视 Worker；观察点到达后，主控检查方向、进度和安全性，符合条件才调用 <code>worker_extend</code>，否则调用 <code>worker_cancel</code>。MAIN 模式会在服务端直接拒绝，不会启动 Worker。</p><div class="test-grid"><label>测试任务<textarea id="testTask" rows="4">检查当前项目并只返回一行：WORKER_ROUTE_OK</textarea></label><label>测试角色<select id="testRole"><option value="worker">Worker</option><option value="verifier">Verifier（只读）</option></select></label></div><div class="actions"><button id="runWorker" class="secondary">运行当前模式路由</button></div><pre id="runResult"></pre><pre id="status"></pre></div>
         </section>
       </main>
     </div>

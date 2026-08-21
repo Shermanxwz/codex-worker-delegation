@@ -56,7 +56,7 @@ test('plugin MCP runner starts with a minimal PATH', async (t) => {
   assert.equal(initialized.result.serverInfo.name, 'codex-worker-delegation');
   child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }) + '\n');
   const listed = await waitForLine(child, (value) => value.id === 2);
-  assert.deepEqual(listed.result.tools.map((tool) => tool.name), ['delegation_status', 'delegate_worker']);
+  assert.deepEqual(listed.result.tools.map((tool) => tool.name), ['delegation_status', 'delegate_worker', 'worker_status', 'worker_extend', 'worker_cancel']);
 });
 
 test('plugin policy runner blocks root Bash in DELEGATE with a minimal PATH', async (t) => {

@@ -19,3 +19,8 @@ export function statePath(env = process.env) { return path.join(dataDir(env), 's
 export function vaultKeyPath(env = process.env) { return path.join(dataDir(env), 'master.key'); }
 export function gatewayTokenPath(env = process.env) { return path.join(dataDir(env), 'gateway.token'); }
 export function auditPath(env = process.env) { return path.join(dataDir(env), 'audit.jsonl'); }
+export function workerTasksDir(env = process.env) { return path.join(dataDir(env), 'worker-tasks'); }
+export function workerTaskPath(env = process.env, taskId) {
+  if (!/^[A-Za-z0-9_-]{8,128}$/.test(String(taskId || ''))) throw new Error('invalid worker task id');
+  return path.join(workerTasksDir(env), `${taskId}.json`);
+}
