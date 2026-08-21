@@ -92,4 +92,4 @@ Root Codex thread
 
 ## Sandbox values
 
-App Server uses current camelCase protocol values (`workspaceWrite`, `readOnly`, `dangerFullAccess`). Legacy kebab-case inputs accepted by this project are normalized before `thread/start`.
+App Server's wire protocol uses hyphenated values (`workspace-write`, `read-only`, `danger-full-access`). The control plane also accepts legacy camelCase aliases from its own callers and normalizes them before `thread/start`.

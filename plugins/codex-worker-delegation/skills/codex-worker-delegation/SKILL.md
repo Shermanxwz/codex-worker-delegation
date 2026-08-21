@@ -30,4 +30,4 @@ Do not change the top-level `model_provider` or `model` to switch providers. Pro
 
 ## Verification
 
-Use `cwd-verifier` or `delegate_worker(role="verifier")` after meaningful implementation. Verifier App Server threads are `readOnly`. The Web panel's **真实共存验收** is the authoritative runtime proof when the user wants to verify simultaneous ChatGPT login and New API operation on the actual Linux installation.
+Use `cwd-verifier` or `delegate_worker(role="verifier")` after meaningful implementation. Verifier App Server threads use the official `read-only` wire value. The Web panel's **真实共存验收** is the authoritative runtime proof when the user wants to verify simultaneous ChatGPT login and New API operation on the actual Linux installation.
