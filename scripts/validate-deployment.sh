@@ -15,9 +15,16 @@ if [[ "${EUID}" -eq 0 && "${CWD_ALLOW_ROOT_INSTALL:-0}" != "1" ]]; then fail 'se
 [[ -f "$SERVICE_FILE" ]] && pass 'systemd user unit installed' || fail 'systemd user unit installed'
 if [[ -f "$SERVICE_FILE" ]]; then
   grep -q '^NoNewPrivileges=true$' "$SERVICE_FILE" && pass 'systemd NoNewPrivileges enabled' || fail 'systemd NoNewPrivileges enabled'
-  grep -q '^ProtectSystem=strict$' "$SERVICE_FILE" && pass 'systemd ProtectSystem=strict enabled' || fail 'systemd ProtectSystem=strict enabled'
+  grep -q '^ProtectSystem=full$' "$SERVICE_FILE" && pass 'systemd ProtectSystem=full enabled without freezing workspaces' || fail 'systemd ProtectSystem=full enabled without freezing workspaces'
   grep -q '^CapabilityBoundingSet=$' "$SERVICE_FILE" && pass 'systemd capabilities dropped' || fail 'systemd capabilities dropped'
+  grep -Fq "WorkingDirectory=$INSTALL_ROOT/current" "$SERVICE_FILE" && pass 'systemd unit targets actual install root' || fail 'systemd unit targets actual install root'
+  grep -Fq "Environment=CWD_NODE_BIN=$INSTALL_ROOT/runtime/node" "$SERVICE_FILE" && pass 'systemd unit uses pinned Node runtime' || fail 'systemd unit uses pinned Node runtime'
   if grep -Eq 'User=root|/root/Documents|codex-primary-runtime' "$SERVICE_FILE"; then fail 'unit contains no root/development-machine path'; else pass 'unit contains no root/development-machine path'; fi
+fi
+if [[ -L "$INSTALL_ROOT/runtime/node" && -x "$INSTALL_ROOT/runtime/node" ]]; then
+  pass "pinned service Node is executable ($(readlink -f "$INSTALL_ROOT/runtime/node"))"
+else
+  fail 'pinned service Node is executable'
 fi
 
 if [[ "${CWD_INSTALL_NO_SYSTEMD:-0}" != "1" ]]; then
@@ -47,9 +54,12 @@ done
 RECORD="$INSTALL_ROOT/install-record.json"
 AUTH_FILE="${CODEX_HOME:-$HOME/.codex}/auth.json"
 if [[ -f "$RECORD" && -n "$NODE_BIN" ]]; then
-  EXPECTED="$($NODE_BIN -e "const j=require(process.argv[1]);process.stdout.write(String(j.authSha256))" "$RECORD")"
-  if [[ -f "$AUTH_FILE" ]]; then ACTUAL="$(sha256sum "$AUTH_FILE"|awk '{print $1}')"; else ACTUAL='absent'; fi
-  [[ "$EXPECTED" == "$ACTUAL" ]] && pass 'ChatGPT auth.json still matches install snapshot' || fail 'ChatGPT auth.json still matches install snapshot'
+  EXPECTED_AUTH="$($NODE_BIN -e "const j=require(process.argv[1]);process.stdout.write(String(j.authSha256))" "$RECORD")"
+  EXPECTED_RELEASE="$($NODE_BIN -e "const j=require(process.argv[1]);process.stdout.write(String(j.releaseId))" "$RECORD")"
+  if [[ -f "$AUTH_FILE" ]]; then ACTUAL_AUTH="$(sha256sum "$AUTH_FILE"|awk '{print $1}')"; else ACTUAL_AUTH='absent'; fi
+  ACTUAL_RELEASE="$(cat "$CURRENT/.release-id" 2>/dev/null || printf 'missing')"
+  [[ "$EXPECTED_AUTH" == "$ACTUAL_AUTH" ]] && pass 'ChatGPT auth.json still matches install snapshot' || fail 'ChatGPT auth.json still matches install snapshot'
+  [[ "$EXPECTED_RELEASE" == "$ACTUAL_RELEASE" ]] && pass 'install record matches active release' || fail "install record matches active release ($EXPECTED_RELEASE != $ACTUAL_RELEASE)"
 else fail 'install record exists'; fi
 
 if [[ -d "$CURRENT" && -n "$NODE_BIN" ]]; then
