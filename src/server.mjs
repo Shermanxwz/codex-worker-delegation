@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
-import { StateStore, publicState, activeRouting, setRoutingMode } from './store.mjs';
+import { StateStore, publicState, activeRouting, setRoutingMode, REASONING_EFFORTS } from './store.mjs';
 import { SecretVault } from './vault.mjs';
 import { ResponsesGateway } from './gateway.mjs';
 import { probeProvider, listProviderModels } from './provider.mjs';
@@ -65,7 +65,8 @@ export function createApp({ env = process.env, fetchImpl = fetch } = {}) {
           const { mode } = await readJson(req);
           if (!MODES.has(mode)) return sendJson(res, 400, { error: 'mode must be AUTO, DELEGATE, or MAIN' });
           const state = await store.update((s) => { s.mode = mode; return s; });
-          await store.audit('mode.changed', { mode });
+          const reasoningSync = await syncTopLevelReasoning(state, codex);
+          await store.audit('mode.changed', { mode, reasoningSync });
           return sendJson(res, 200, publicState(state));
         }
         if (req.method === 'PUT' && url.pathname === '/api/routing') {
@@ -74,7 +75,8 @@ export function createApp({ env = process.env, fetchImpl = fetch } = {}) {
           if (!MODES.has(mode)) return sendJson(res, 400, { error: 'invalid mode' });
           validateRouting(body.roles);
           const state = await store.update((s) => setRoutingMode(s, mode, body.roles));
-          await store.audit('routing.changed', { mode, roles: body.roles });
+          const reasoningSync = await syncTopLevelReasoning(state, codex);
+          await store.audit('routing.changed', { mode, roles: body.roles, reasoningSync });
           return sendJson(res, 200, publicState(state));
         }
         if (req.method === 'PUT' && url.pathname === '/api/provider') {
@@ -167,7 +169,8 @@ async function executeWorker(body, { store, env, codex }) {
   if (plan.execution === 'native_subagent_required') {
     return {
       ...plan, mode, role: roleName, provider: route.provider, model: route.model,
-      instruction: `Use Codex native spawn_agent with agent_type=${plan.agentType} and model=${route.model}. This route stays on the built-in OpenAI provider.`
+      effort: route.effort || 'auto',
+      instruction: `Use Codex native spawn_agent with agent_type=${plan.agentType} and model=${route.model}${route.effort && route.effort !== 'auto' ? ` and reasoning_effort=${route.effort}` : ''}. This route stays on the built-in OpenAI provider.`
     };
   }
   if (route.provider === 'third_party') await ensureCodexIntegration({ store, codex });
@@ -177,6 +180,7 @@ async function executeWorker(body, { store, env, codex }) {
     prompt: body.task,
     cwd: body.cwd || process.cwd(),
     sandbox: roleName === 'verifier' ? 'read-only' : (body.sandbox || 'workspace-write'),
+    effort: route.effort || 'auto',
     developerInstructions: roleName === 'verifier' ? 'Verify independently. Prefer inspection and tests; do not modify implementation files.' : 'Execute the assigned implementation task and report concrete results.'
   }), { env });
   await store.audit('worker.completed', { mode, role: roleName, provider: route.provider, model: route.model, execution: plan.execution, threadId: result.threadId });
@@ -198,6 +202,7 @@ async function verifyCoexistence({ body, store, codex, env }) {
       prompt: 'Reply with exactly CWD_COEXISTENCE_OK. Do not use tools.',
       cwd: body.cwd || process.cwd(),
       sandbox: 'read-only',
+      effort: routeEffortForModel(state, 'third_party', model),
       developerInstructions: 'This is a read-only provider coexistence probe. Do not use tools or modify files; answer only with the requested marker.',
       timeoutMs: Number(body.timeoutMs || 120000)
     });
@@ -232,6 +237,14 @@ function firstThirdPartyModel(state) {
     for (const roleName of ['worker', 'main', 'verifier']) if (routes[roleName]?.provider === 'third_party' && routes[roleName]?.model) return routes[roleName].model;
   }
   return '';
+}
+function routeEffortForModel(state, provider, model) {
+  for (const routes of Object.values(state.routing || {})) {
+    for (const route of Object.values(routes || {})) {
+      if (route?.provider === provider && route.model === model && route.effort && route.effort !== 'auto') return route.effort;
+    }
+  }
+  return 'auto';
 }
 function summarizeAccount(result) { const a = result?.account || null; return a ? { type: a.type || null, planType: a.planType || null, email: a.email || null, requiresOpenaiAuth: result?.requiresOpenaiAuth ?? null } : { type: null, planType: null, email: null, requiresOpenaiAuth: result?.requiresOpenaiAuth ?? null }; }
 function publicSelectors(value = {}) { return Object.fromEntries(['model_provider','model'].filter((k)=>value[k]?.raw).map((k)=>[k,value[k].raw])); }
@@ -270,12 +283,18 @@ function isLoopback(host) { return ['127.0.0.1', '::1', 'localhost'].includes(ho
 function secureCookie(env, host) { return env.CWD_COOKIE_SECURE === '1' || !isLoopback(host); }
 async function authStatus({ req, env, host, webAuth }) { const configured = await webAuth.isConfigured(); return { configured, authenticated: configured ? webAuth.authenticated(req) : isLoopback(host) && env.CWD_REQUIRE_AUTH !== '1', required: configured || env.CWD_REQUIRE_AUTH === '1' || !isLoopback(host), minPasswordLength: MIN_PASSWORD_LENGTH, loopback: isLoopback(host) }; }
 async function ensureCodexIntegration({ store, codex }) { await store.ensureGatewayToken(); const snap = await codex.install(); await store.update((s) => { s.installed = true; return s; }); return snap; }
+async function syncTopLevelReasoning(state, codex) {
+  const main = activeRouting(state, state.mode).main;
+  if (main?.provider !== 'official' || !main.effort || main.effort === 'auto') return { changed: false, scope: 'app-server-route-only', effort: main?.effort || 'auto' };
+  return { ...(await codex.setReasoningEffort(main.effort)), scope: 'official-top-level-default' };
+}
 function validateRouting(roles) {
   if (!roles || typeof roles !== 'object') throw new Error('roles is required');
   for (const [name, value] of Object.entries(roles)) {
     if (!ROLES.has(name)) throw new Error(`unknown role ${name}`);
     if (!PROVIDERS.has(value?.provider)) throw new Error(`${name}.provider must be official or third_party`);
     if (typeof value?.model !== 'string') throw new Error(`${name}.model must be a string`);
+    if (value?.effort !== undefined && !REASONING_EFFORTS.includes(value.effort)) throw new Error(`${name}.effort must be auto, none, low, medium, high, xhigh, max, or ultra`);
   }
 }
 function validateProvider(body) {

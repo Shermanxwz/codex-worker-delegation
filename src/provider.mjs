@@ -61,7 +61,16 @@ export async function listProviderModels({ baseUrl, apiKey, timeoutMs = 10000, f
     const id = typeof item === 'string' ? item : item?.id || item?.name || item?.model;
     if (!id || seen.has(id)) return null;
     seen.add(id);
-    return { id: String(id), name: String(item?.display_name || item?.displayName || item?.name || id), ownedBy: item?.owned_by || item?.ownedBy || null };
+    const normalized = {
+      id: String(id),
+      name: String(item?.display_name || item?.displayName || item?.name || id),
+      ownedBy: item?.owned_by || item?.ownedBy || null
+    };
+    const supportedReasoningEfforts = item?.supportedReasoningEfforts || item?.supported_reasoning_levels;
+    const defaultReasoningEffort = item?.defaultReasoningEffort || item?.default_reasoning_level;
+    if (supportedReasoningEfforts) normalized.supportedReasoningEfforts = supportedReasoningEfforts;
+    if (defaultReasoningEffort) normalized.defaultReasoningEffort = defaultReasoningEffort;
+    return normalized;
   }).filter(Boolean);
 }
 

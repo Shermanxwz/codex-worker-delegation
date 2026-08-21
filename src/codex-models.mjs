@@ -11,13 +11,18 @@ export function toCodexModelInfo(model, priority = 0) {
   const slug = String(model?.id || model?.model || model?.name || '').trim();
   const displayName = String(model?.name || slug).trim() || slug;
   const description = String(model?.description || DEFAULT_DESCRIPTION).trim();
+  const advertised = model?.supportedReasoningEfforts || model?.supported_reasoning_levels;
+  const supportedReasoningLevels = Array.isArray(advertised)
+    ? advertised.map((item) => typeof item === 'string' ? { effort: item, description: '' } : { effort: item?.reasoningEffort || item?.effort, description: item?.description || '' }).filter((item) => item.effort)
+    : [];
+  const defaultReasoningLevel = model?.defaultReasoningEffort || model?.default_reasoning_level || null;
   return {
     slug,
     display_name: displayName,
     description,
     base_instructions: '',
-    default_reasoning_level: null,
-    supported_reasoning_levels: [],
+    default_reasoning_level: defaultReasoningLevel,
+    supported_reasoning_levels: supportedReasoningLevels,
     shell_type: 'disabled',
     visibility: 'list',
     supported_in_api: true,
