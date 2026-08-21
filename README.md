@@ -45,13 +45,15 @@ Third-party → third-party intentionally uses an independent App Server thread 
 
 The Web UI owns all normal operations:
 
-- `AUTO`, `DELEGATE`, `MAIN` modes.
-- Independent **provider + model** selection for Main / Worker / Verifier in every mode.
+- `AUTO`, `WORKER` (`DELEGATE` internally), `MAIN` modes.
+- Compact routing selection: AUTO exposes one Main model, WORKER exposes Main + Worker, and MAIN exposes one Main model.
+- Verifier is an internal read-only role that inherits Worker and never gets a separate model selector.
 - Official model discovery from the running Codex `model/list` API.
 - Third-party model discovery from New API `/v1/models`, with manual model ID fallback.
 - New API Base URL + key + protocol configuration.
 - Per-model protocol probe/cache.
 - Install/refresh of the namespaced Codex provider and agent roles.
+- Independent jump pages for access protection, New API configuration, model routing, model connectivity, and Codex integration.
 - **真实共存验收** runtime proof.
 - Real route execution for Worker / Verifier.
 
@@ -100,6 +102,8 @@ npm test
 npm start
 ```
 
+For a local deployment that survives terminal closure, install the system service from `deploy/codex-worker-delegation.service`, then use `systemctl enable --now codex-worker-delegation`. The service is loopback-only on `127.0.0.1:8788`; `npm run start:local` remains available for environments without systemd.
+
 After configuring a real New API provider on the target Linux machine, run the account-level seal:
 
 ```bash
@@ -108,7 +112,7 @@ npm run seal:production
 
 It installs the namespaced provider if needed, checks the packaged Codex runtime, runs the complete third-party model connectivity matrix, verifies the official account before and after a real third-party thread, checks the configured worker route, and exits non-zero unless the requested core proofs pass. It never prints or rewrites API keys or `auth.json`.
 
-Open the loopback Web URL, set the strong control-plane password, configure New API, select routing, and press **安装 / 刷新**. The routing surface intentionally exposes one model for AUTO, Main + Worker for WORKER, and Main only for MAIN. Verifier is an internal read-only check that inherits Worker. The model section supports one-by-one or batch connectivity tests. Use **真实共存验收** on the real Linux install when you want direct proof that a third-party turn and ChatGPT login coexist in one `CODEX_HOME`.
+Open the loopback Web URL, set and confirm the strong control-plane password, configure New API, select routing, and press **安装 / 刷新**. The UI is split into independent pages for access protection, provider configuration, routing, model connectivity, and Codex integration. The routing surface intentionally exposes one model for AUTO, Main + Worker for WORKER, and Main only for MAIN. Verifier is an internal read-only check that inherits Worker. New API models stay in the namespaced control-plane route and do not merge into the official ChatGPT model picker.
 
 The plugin-manager installer remains available:
 

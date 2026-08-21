@@ -7,7 +7,7 @@ Codex Worker Delegation augments the official ChatGPT Linux / Codex runtime rath
 v3 has four layers:
 
 1. **Codex plugin** — routing skill, hooks, `delegation_status`, and `delegate_worker`.
-2. **Local control plane** — loopback Web UI, per-mode/per-role routing, encrypted provider state, coexistence proof, audit log.
+2. **Local control plane** — loopback Web UI, compact per-mode routing, encrypted provider state, coexistence proof, audit log.
 3. **Responses compatibility gateway** — a stable Codex-facing Responses provider that either forwards upstream `/v1/responses` or bridges `/v1/chat/completions`.
 4. **Codex App Server integration** — reads `account/read` + `model/list` and creates provider-specific worker threads with explicit `thread/start.modelProvider`.
 
@@ -55,11 +55,12 @@ The proof result is shown in the Web panel and recorded as a redacted audit even
 
 ## Model discovery
 
-- Official catalog: Codex App Server `model/list`, paginated.
-- Third-party catalog: upstream `/v1/models`.
+- Official catalog: Codex App Server `model/list`, paginated, and used only by the built-in `openai` provider.
+- Third-party catalog: upstream `/v1/models`, shown in the local routing and connectivity pages.
+- Third-party IDs are not merged into the official ChatGPT model picker; provider isolation is preserved.
 - Manual model ID fallback remains available.
 
-Each of AUTO / DELEGATE / MAIN stores Main / Worker / Verifier provider+model independently.
+AUTO stores one Main route and makes Worker / Verifier inherit it. DELEGATE (shown as WORKER) stores Main + Worker routes and makes Verifier inherit Worker. MAIN stores one Main route and disables delegation.
 
 ## Protocol detection
 
