@@ -22,3 +22,25 @@ test('web auth stores only a salted scrypt hash and authenticates expiring sessi
   auth.clear(request);
   assert.equal(auth.authenticated(request), false);
 });
+
+test('password rotation immediately revokes every previously issued session', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cwd-auth-rotate-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const auth = new WebAuth({ env: { CWD_DATA_DIR: dir } });
+  await auth.setPassword('CorrectHorseBatteryStaple!');
+  const first = await auth.login('CorrectHorseBatteryStaple!', 'client-a');
+  const second = await auth.login('CorrectHorseBatteryStaple!', 'client-b');
+  const firstReq = { headers: { cookie: `cwd_session=${first}` } };
+  const secondReq = { headers: { cookie: `cwd_session=${second}` } };
+  assert.equal(auth.authenticated(firstReq), true);
+  assert.equal(auth.authenticated(secondReq), true);
+
+  await auth.changePassword('DifferentHorseBatteryStaple#2');
+  assert.equal(auth.authenticated(firstReq), false);
+  assert.equal(auth.authenticated(secondReq), false);
+  assert.equal(await auth.verifyPassword('CorrectHorseBatteryStaple!'), false);
+  assert.equal(await auth.verifyPassword('DifferentHorseBatteryStaple#2'), true);
+
+  const replacement = await auth.login('DifferentHorseBatteryStaple#2', 'client-a');
+  assert.equal(auth.authenticated({ headers: { cookie: `cwd_session=${replacement}` } }), true);
+});
