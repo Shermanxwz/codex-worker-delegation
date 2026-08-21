@@ -3,6 +3,16 @@ import { responsesToChat, convertChatSse, chatJsonToResponses } from './translat
 
 async function readErrorBody(response) { try { return await response.clone().text(); } catch { return ''; } }
 
+function withoutForwardedReasoning(body, provider) {
+  if (provider.forwardReasoningEffort === true || !body?.reasoning?.effort) return body;
+  const reasoning = { ...body.reasoning };
+  delete reasoning.effort;
+  const next = { ...body };
+  if (Object.keys(reasoning).length) next.reasoning = reasoning;
+  else delete next.reasoning;
+  return next;
+}
+
 export class ResponsesGateway {
   constructor({ store, vault, fetchImpl = fetch }) { this.store = store; this.vault = vault; this.fetchImpl = fetchImpl; }
 
@@ -22,9 +32,9 @@ export class ResponsesGateway {
     const protocol = provider.protocol === 'auto' ? cached?.protocol : provider.protocol;
 
     if (protocol === 'chat') return this.#chat(res, body, ep.chat, headers, provider);
-    if (protocol === 'responses') return this.#responses(res, body, ep.responses, headers);
+    if (protocol === 'responses') return this.#responses(res, withoutForwardedReasoning(body, provider), ep.responses, headers);
 
-    const upstream = await this.fetchImpl(ep.responses, { method: 'POST', headers, body: JSON.stringify(body) });
+    const upstream = await this.fetchImpl(ep.responses, { method: 'POST', headers, body: JSON.stringify(withoutForwardedReasoning(body, provider)) });
     if (!upstream.ok) {
       const errorText = await readErrorBody(upstream);
       if (shouldTryChatFallback(upstream.status, errorText)) {

@@ -57,8 +57,15 @@ The proof result is shown in the Web panel and recorded as a redacted audit even
 
 - Official catalog: Codex App Server `model/list`, paginated, and used only by the built-in `openai` provider.
 - Third-party catalog: upstream `/v1/models`, shown in the local routing and connectivity pages.
-- Third-party IDs are not merged into the official ChatGPT model picker; provider isolation is preserved.
+- The local gateway additionally translates the third-party catalog to Codex's native `/models?client_version=...` envelope for the namespaced provider. This is a provider-specific catalog, not a merge into the signed-in official `openai` picker.
+- Third-party IDs are not relabeled as official models; provider isolation is preserved while both providers remain installed and routable in the same session.
 - Manual model ID fallback remains available.
+
+## Reasoning effort
+
+The routing state currently selects provider and model; it does not silently invent a per-route reasoning level. When an App Server turn is started without an explicit `effort`, Codex applies its effective configuration and the selected model's advertised defaults. In the current machine configuration, the Codex-level setting is `model_reasoning_effort = "max"`, so an official Codex turn inherits `max` unless the caller overrides it. The live official catalog still advertises each model's supported and default efforts.
+
+For New API traffic, the gateway's `forwardReasoningEffort` switch is false by default. With that setting, an inherited Codex `reasoning.effort` is removed before both Responses forwarding and Chat fallback, leaving the upstream provider to choose its own default. This prevents the local Codex setting from being forwarded to a third-party model by accident. If forwarding is explicitly enabled, the effort is preserved for providers that support it.
 
 AUTO stores one Main route and makes Worker / Verifier inherit it. DELEGATE (shown as WORKER) stores Main + Worker routes and makes Verifier inherit Worker. MAIN stores one Main route and disables delegation.
 
