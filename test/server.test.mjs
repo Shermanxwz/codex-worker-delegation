@@ -28,8 +28,8 @@ test('worker start returns a persistent task with progress, heartbeat, events, a
   await app.store.write({mode:'DELEGATE',provider:{name:'New API',baseUrl:'https://new.example/v1',protocol:'auto',apiKeyCipher,headers:{}},routing:{DELEGATE:{main:{provider:'official',model:'official-a'},worker:{provider:'third_party',model:'third-a'},verifier:{provider:'third_party',model:'third-a'}}},installed:false});
   const started=await json(base,'/api/worker/start','POST',{role:'worker',task:'return the worker marker',timeoutMs:10000});
   assert.equal(started.r.status,202);assert.match(started.j.taskId,/^wrk_/);assert.ok(started.j.lastHeartbeatAt);assert.ok(['queued','running','completed'].includes(started.j.status));
-  let task=started.j;
-  for(let i=0;i<40 && !['completed','failed','timed_out'].includes(task.status);i++){await new Promise((resolve)=>setTimeout(resolve,25));const next=await json(base,`/api/worker/status/${encodeURIComponent(task.taskId)}`);task=next.j;}
+  const terminalStatuses=new Set(['completed','failed','timed_out','cancelled']);
+  const task=await waitTask(base,started.j.taskId,(candidate)=>terminalStatuses.has(candidate.status),5000);
   assert.equal(task.status,'completed');assert.equal(task.output,'CWD_COEXISTENCE_OK');assert.ok(task.events.some((event)=>event.type==='worker.started'));assert.ok(task.events.some((event)=>event.type==='thread/started'));assert.equal(task.result.taskId,task.taskId);
   const persisted=JSON.parse(await fs.readFile(path.join(env.CWD_DATA_DIR,'worker-tasks',`${task.taskId}.json`),'utf8'));assert.equal(persisted.status,'completed');
   const audit=await fs.readFile(path.join(env.CWD_DATA_DIR,'audit.jsonl'),'utf8');assert.match(audit, new RegExp(`"event":"worker\\.completed"[^\n]*"taskId":"${task.taskId}"`));
