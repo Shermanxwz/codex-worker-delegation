@@ -102,6 +102,22 @@ export class CodexConfigManager {
     return { selectorsBefore, selectorsAfter, topLevelPreserved: true, providerId: PROVIDER, agents: ['cwd-worker', 'cwd-verifier'] };
   }
 
+  async uninstall() {
+    const before = await this.read();
+    const selectorsBefore = inspectTopLevel(before);
+    const next = removeManagedSections(before);
+    const selectorsAfter = inspectTopLevel(next);
+    if (!sameTopLevelSelectors(selectorsBefore, selectorsAfter)) throw new Error('Refusing to uninstall: official top-level model selector would change');
+    await this.#backupAndWrite(before, next);
+    await Promise.all([
+      fs.rm(path.join(this.agentsDir, 'cwd-worker.toml'), { force: true }),
+      fs.rm(path.join(this.agentsDir, 'cwd-verifier.toml'), { force: true }),
+      fs.rm(path.join(this.home, 'cwd-worker.config.toml'), { force: true }),
+      fs.rm(path.join(this.home, 'cwd-verifier.config.toml'), { force: true })
+    ]);
+    return { selectorsBefore, selectorsAfter, topLevelPreserved: true, providerId: PROVIDER, removed: true };
+  }
+
   async #writeRole(file, text) {
     const tmp = `${file}.cwd.tmp`;
     await fs.writeFile(tmp, text, { mode: 0o600 });
@@ -114,7 +130,7 @@ export class CodexConfigManager {
     await fs.mkdir(this.home, { recursive: true, mode: 0o700 });
     if (before) await fs.writeFile(`${this.file}.cwd-backup`, before, { mode: 0o600 });
     const tmp = `${this.file}.cwd.tmp`;
-    await fs.writeFile(tmp, next.endsWith('\n') ? next : `${next}\n`, { mode: 0o600 });
+    await fs.writeFile(tmp, next ? (next.endsWith('\n') ? next : `${next}\n`) : '', { mode: 0o600 });
     await fs.rename(tmp, this.file);
     await fs.chmod(this.file, 0o600).catch(() => {});
   }
