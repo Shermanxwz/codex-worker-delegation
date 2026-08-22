@@ -32,7 +32,11 @@ export const DEFAULT_STATE = Object.freeze({
 
 const STATE_LOCK_TIMEOUT_MS = 10_000;
 const STATE_LOCK_OWNER_GRACE_MS = 500;
+const DEFAULT_AUDIT_MAX_BYTES = 5 * 1024 * 1024;
+const DEFAULT_AUDIT_MAX_FILES = 3;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function boundedNumber(value, fallback, min, max) { const parsed = Number(value); return Number.isFinite(parsed) ? Math.min(max, Math.max(min, Math.trunc(parsed))) : fallback; }
 
 async function syncDirectory(directory) {
   let handle;
@@ -193,7 +197,7 @@ async function createGatewayToken(file) {
 }
 
 export class StateStore {
-  constructor({ env = process.env } = {}) { this.env = env; this.file = statePath(env); this.gatewayTokenPromise = null; this.mutationTail = Promise.resolve(); }
+  constructor({ env = process.env } = {}) { this.env = env; this.file = statePath(env); this.gatewayTokenPromise = null; this.mutationTail = Promise.resolve(); this.auditTail = Promise.resolve(); this.auditMaxBytes = boundedNumber(env.CWD_AUDIT_MAX_BYTES, DEFAULT_AUDIT_MAX_BYTES, 64 * 1024, 100 * 1024 * 1024); this.auditMaxFiles = boundedNumber(env.CWD_AUDIT_MAX_FILES, DEFAULT_AUDIT_MAX_FILES, 1, 20); }
   async read() { try { return normalizeState(JSON.parse(await fs.readFile(this.file, 'utf8'))); } catch (error) { if (error.code === 'ENOENT') return normalizeState(); throw new Error(`Cannot read state ${this.file}: ${error.message}`, { cause: error }); } }
   async write(next) { return this.#enqueueMutation(() => this.#withFileLock(() => this.#writeUnlocked(next))); }
   async update(mutator) {
@@ -204,7 +208,22 @@ export class StateStore {
   async #withFileLock(operation) { const release = await acquireFileLock(this.file); try { return await operation(); } finally { await release(); } }
   async #writeUnlocked(next) { const normalized = { ...normalizeState(next), updatedAt: new Date().toISOString() }; await atomicWrite(this.file, `${JSON.stringify(normalized, null, 2)}\n`); return normalized; }
   async ensureGatewayToken() { if (this.gatewayTokenPromise) return this.gatewayTokenPromise; this.gatewayTokenPromise = createGatewayToken(gatewayTokenPath(this.env)); try { return await this.gatewayTokenPromise; } finally { this.gatewayTokenPromise = null; } }
-  async audit(event, details = {}) { const file = auditPath(this.env); await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 }); await fs.appendFile(file, `${JSON.stringify({ at: new Date().toISOString(), event, ...details })}\n`, { mode: 0o600 }); await fs.chmod(file, 0o600).catch(() => {}); }
+  async audit(event, details = {}) {
+    const line = `${JSON.stringify({ at: new Date().toISOString(), event, ...details })}\n`;
+    const run = this.auditTail.catch(() => {}).then(() => this.#appendAudit(line)); this.auditTail = run.then(() => undefined, () => undefined); return run;
+  }
+  async #appendAudit(line) {
+    const file = auditPath(this.env); await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+    const currentSize = await fs.stat(file).then((stat) => stat.size).catch((error) => error.code === 'ENOENT' ? 0 : (() => { throw error; })());
+    if (currentSize + Buffer.byteLength(line, 'utf8') > this.auditMaxBytes) {
+      for (let index = this.auditMaxFiles - 1; index >= 1; index -= 1) {
+        const source = `${file}.${index}`; const target = `${file}.${index + 1}`;
+        await fs.rename(source, target).catch((error) => { if (error.code !== 'ENOENT') throw error; });
+      }
+      await fs.rename(file, `${file}.1`).catch((error) => { if (error.code !== 'ENOENT') throw error; });
+    }
+    await fs.appendFile(file, line, { mode: 0o600 }); await fs.chmod(file, 0o600).catch(() => {});
+  }
 }
 
 export function publicState(state) {
