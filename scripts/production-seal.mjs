@@ -46,6 +46,21 @@ function command(args, env) {
   };
 }
 
+function repositoryTestEnv(env) {
+  const isolated = { ...env };
+  // The repository tests create their own throwaway state and Codex homes.
+  // Never let a production seal token, port, state directory, or credentials
+  // change the behavior of those deterministic fixtures.
+  for (const key of [
+    'CWD_DATA_DIR', 'CWD_STATE_FILE', 'CWD_WEB_TOKEN', 'CWD_PORT', 'CWD_HOST',
+    'CWD_REQUIRE_AUTH', 'CWD_SYSTEMD_SCOPE', 'CWD_RELEASE_ROOT', 'CWD_NODE_BIN',
+    'CODEX_HOME', 'CODEX_BIN', 'CODEX_CLI_PATH', 'CWD_SEAL_COMPACT',
+    'CWD_SEAL_HTTP_TIMEOUT_MS', 'CWD_SEAL_APP_SERVER_TIMEOUT_MS'
+  ]) delete isolated[key];
+  isolated.PATH = `${path.dirname(process.execPath)}${path.delimiter}${isolated.PATH || ''}`;
+  return isolated;
+}
+
 async function fileSnapshot(file) {
   try {
     const bytes = await fs.readFile(file);
@@ -110,19 +125,36 @@ async function run() {
     record('ChatGPT Linux bundled runtime discovery', desktopPresent, desktopPresent ? desktopPath : `packaged path not found; resolved ${binary}`);
 
     phase('repository checks');
-    const checkResult = command([process.execPath, 'scripts/check.mjs'], env);
+    const testEnv = repositoryTestEnv(env);
+    const checkResult = command([process.execPath, 'scripts/check.mjs'], testEnv);
     record('repository static/check contract', checkResult.ok, checkResult.output);
     if (!checkResult.ok) throw new Error('repository check failed');
     const testFiles = (await fs.readdir(path.join(ROOT, 'test'))).filter((name) => name.endsWith('.test.mjs')).sort().map((name) => path.join('test', name));
     phase('repository tests');
-    const testResult = command([process.execPath, '--test', ...testFiles], env);
+    const testResult = command([process.execPath, '--test', ...testFiles], testEnv);
     record('repository test suite', testResult.ok, testResult.output);
     if (!testResult.ok) throw new Error('repository test suite failed');
 
     phase('official plugin installation');
     const pluginResult = command(['bash', 'scripts/install.sh'], env);
-    record('official Codex plugin installation', pluginResult.ok, pluginResult.output);
-    if (!pluginResult.ok) throw new Error('official Codex plugin installation failed');
+    let pluginInstallOk = pluginResult.ok;
+    let pluginInstallDetail = pluginResult.output;
+    if (!pluginInstallOk && /marketplace .* already added from a different source/i.test(pluginResult.output)) {
+      const existingList = command([binary, 'plugin', 'list', '--json'], env);
+      let parsedList = null;
+      try { parsedList = JSON.parse(existingList.output); } catch {}
+      const existing = parsedList?.installed?.find((item) => item?.pluginId === `codex-worker-delegation@${MARKETPLACE}`);
+      const expectedDigest = command([process.execPath, 'scripts/tree-digest.mjs', path.join(ROOT, 'plugins/codex-worker-delegation')], env);
+      const installedDigest = existing?.source?.path
+        ? command([process.execPath, 'scripts/tree-digest.mjs', existing.source.path], env)
+        : { ok: false, output: 'installed plugin source path is unavailable' };
+      pluginInstallOk = Boolean(existing?.installed && expectedDigest.ok && installedDigest.ok && expectedDigest.output.trim() === installedDigest.output.trim());
+      pluginInstallDetail = pluginInstallOk
+        ? `marketplace already points at another source, but the installed official plugin payload is byte-identical (${expectedDigest.output.trim()})`
+        : `${pluginResult.output}\nExisting plugin payload verification: ${installedDigest.output}`;
+    }
+    record('official Codex plugin installation', pluginInstallOk, pluginInstallDetail);
+    if (!pluginInstallOk) throw new Error('official Codex plugin installation failed');
     phase('plugin verification');
     const pluginList = command([binary, 'plugin', 'list', '--json'], env);
     const pluginInstalled = pluginList.ok && pluginList.output.includes(`codex-worker-delegation@${MARKETPLACE}`);
@@ -180,9 +212,9 @@ async function run() {
       tested: connectivityResults.length,
       catalog: catalog.thirdParty.models.length,
       passed: connectivityPassed.length,
-      failed: connectivityResults.filter((result) => !result.ok).map((result) => ({ model: result.model, protocol: result.protocol, status: result.status, error: result.error }))
+      failed: connectivityResults.filter((result) => !result.ok).map((result) => ({ model: result.model, kind: result.kind, protocol: result.protocol, status: result.status, error: result.error }))
     });
-    record('all discovered New API models are Codex-routeable', allModelsPassed, {
+    record('all discovered New API models pass their declared protocol connectivity check', allModelsPassed, {
       tested: connectivityResults.length,
       passed: connectivityPassed.length,
       failed: connectivityResults.length - connectivityPassed.length
@@ -192,11 +224,10 @@ async function run() {
     phase('route selection');
     const state = await store.read();
     const routeCandidates = [];
-    for (const mode of ['DELEGATE', 'AUTO']) {
-      const routes = activeRouting(state, mode);
-      for (const role of ['worker', 'verifier', 'main']) {
-        if (routes[role]?.provider === 'third_party' && routes[role]?.model) routeCandidates.push({ mode, role, model: routes[role].model });
-      }
+    const activeMode = state.mode;
+    const activeRoutes = activeRouting(state, activeMode);
+    for (const role of ['worker', 'verifier', 'main']) {
+      if (activeRoutes[role]?.provider === 'third_party' && activeRoutes[role]?.model) routeCandidates.push({ mode: activeMode, role, model: activeRoutes[role].model });
     }
     const coexistenceModel = routeCandidates[0]?.model || catalog.thirdParty.models[0]?.id;
     phase('real official and third-party coexistence');
@@ -212,23 +243,30 @@ async function run() {
     if (coexistence?.ok !== true || coexistence?.thirdParty?.markerObserved !== true) throw new Error('real coexistence proof failed');
 
     const workerRoute = routeCandidates.find((candidate) => candidate.role === 'worker');
-    if (!workerRoute) throw new Error('configure a third-party Worker model in AUTO or DELEGATE mode before sealing');
-    phase('real third-party Worker completion');
-    const worker = await requestJson(base, env, '/api/worker/run', 'POST', {
-      mode: workerRoute.mode,
-      role: 'worker',
-      task: `Reply exactly with ${SEAL_MARKER}. Do not use tools.`,
-      timeoutMs: Math.min(SEAL_APP_SERVER_TIMEOUT_MS, 120000),
-      waitForCompletion: true
-    });
-    record('real third-party Worker delegation', worker?.provider === 'third_party' && worker?.status === 'completed' && worker?.output?.includes(SEAL_MARKER), {
-      mode: workerRoute.mode,
-      model: workerRoute.model,
-      execution: worker?.execution,
-      status: worker?.status,
-      markerObserved: worker?.output?.includes(SEAL_MARKER) || false,
-      threadId: worker?.threadId
-    });
+    if (!workerRoute) {
+      record('real third-party Worker delegation', false, { activeMode, reason: activeMode === 'MAIN' ? 'MAIN mode intentionally disables Worker delegation' : 'configure a third-party Worker model in the active AUTO or DELEGATE route before sealing' });
+    } else {
+      phase('real third-party Worker completion');
+      try {
+        const worker = await requestJson(base, env, '/api/worker/run', 'POST', {
+          mode: workerRoute.mode,
+          role: 'worker',
+          task: `Reply exactly with ${SEAL_MARKER}. Do not use tools.`,
+          timeoutMs: Math.min(SEAL_APP_SERVER_TIMEOUT_MS, 120000),
+          waitForCompletion: true
+        });
+        record('real third-party Worker delegation', worker?.provider === 'third_party' && worker?.status === 'completed' && worker?.output?.includes(SEAL_MARKER), {
+          mode: workerRoute.mode,
+          model: workerRoute.model,
+          execution: worker?.execution,
+          status: worker?.status,
+          markerObserved: worker?.output?.includes(SEAL_MARKER) || false,
+          threadId: worker?.threadId
+        });
+      } catch (error) {
+        record('real third-party Worker delegation', false, error?.stack || error?.message || error);
+      }
+    }
 
     phase('authentication and selector preservation');
     const afterAuth = await fileSnapshot(authFile);
@@ -237,7 +275,12 @@ async function run() {
     record('official top-level model selectors are unchanged', sameTopLevelSelectors(beforeSelectors, afterSelectors), { before: Object.keys(beforeSelectors), after: Object.keys(afterSelectors) });
     record('managed provider config is present', (await fs.readFile(configFile, 'utf8')).includes('[model_providers.codex_worker_gateway]'), configFile);
   } finally {
-    await new Promise((resolve) => app?.server?.close(() => resolve())).catch(() => {});
+    if (app?.server) {
+      await new Promise((resolve) => {
+        if (!app.server.listening) return resolve();
+        app.server.close(() => resolve());
+      }).catch(() => {});
+    }
   }
 }
 
