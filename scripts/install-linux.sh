@@ -68,7 +68,12 @@ PLUGIN_TREE_SHA="$("$RUNTIME_NODE" -e 'const j=JSON.parse(process.argv[1]);proce
 
 if [[ "${CWD_INSTALL_NO_SYSTEMD:-0}" != "1" ]]; then
   if ! command -v systemctl >/dev/null 2>&1; then echo "systemctl is required for the production service install" >&2; exit 2; fi
-  cwd_systemctl "$SCOPE" daemon-reload; cwd_systemctl "$SCOPE" enable --now codex-worker-delegation.service
+  # `enable --now` does not reload an already-running service after the
+  # current release symlink changes. Explicitly restart so the process cannot
+  # keep executing the previous release from a deleted working tree.
+  cwd_systemctl "$SCOPE" daemon-reload
+  cwd_systemctl "$SCOPE" enable codex-worker-delegation.service
+  cwd_systemctl "$SCOPE" restart codex-worker-delegation.service
   for _ in $(seq 1 60); do if curl --silent --fail --max-time 1 "http://127.0.0.1:${CWD_PORT}/api/health" >/dev/null 2>&1; then break; fi; sleep 0.25; done
   curl --silent --fail --max-time 2 "http://127.0.0.1:${CWD_PORT}/api/health" >/dev/null
 fi
