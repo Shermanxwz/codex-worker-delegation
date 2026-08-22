@@ -1,4 +1,16 @@
-# Architecture
+# Architecture / 架构
+
+## 中文概览
+
+本架构把项目定义为官方 Codex 的本地控制平面，而不是替代 ChatGPT 的客户端。官方 ChatGPT provider 和 OAuth 由 Codex 保留；New API 通过命名空间 provider、Responses 网关和显式 App Server thread 接入。路由由 Web 的 AUTO / WORKER / MAIN 状态决定，Verifier 是继承 Worker 的只读角色，不是第三套模型选择。
+
+项目受控的真实边界包括：官方 → 官方可以走 native subagent；任何涉及第三方 provider 的任务都走 provider-isolated App Server thread；Worker task 必须有 task ID、heartbeat、进度、lease 和终态；官方下拉框不会因为 catalog-only 注入就被宣称已经合法嵌入。
+
+## English overview
+
+This architecture treats the project as a local control plane for official Codex, not as a replacement ChatGPT client. Codex keeps ownership of the official ChatGPT provider and OAuth state; New API is connected through a namespaced provider, a Responses gateway, and explicit App Server threads. Web AUTO / WORKER / MAIN state is authoritative, while Verifier is a read-only role inheriting Worker rather than a third model selector.
+
+The controlled execution boundary is explicit: Official → Official may use native subagents; every route involving a third-party provider uses a provider-isolated App Server thread; every Worker task has a task ID, heartbeat, progress, lease, and terminal state; and catalog-only visibility is never claimed to be legal integration into the official picker.
 
 ## Principle
 
