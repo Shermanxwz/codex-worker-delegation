@@ -30,6 +30,15 @@ export class CodexConfigManager {
   async read() { try { return await fs.readFile(this.file, 'utf8'); } catch (e) { if (e.code === 'ENOENT') return ''; throw e; } }
   async selectors() { return inspectTopLevel(await this.read()); }
 
+  async isInstalled() {
+    const [config, worker, verifier] = await Promise.all([
+      this.read(),
+      fs.readFile(path.join(this.agentsDir, 'cwd-worker.toml'), 'utf8').catch(() => ''),
+      fs.readFile(path.join(this.agentsDir, 'cwd-verifier.toml'), 'utf8').catch(() => '')
+    ]);
+    return config.includes(`[model_providers.${PROVIDER}]`) && config.includes(`base_url = ${quote(this.gatewayBaseUrl)}`) && worker.includes('name = "cwd-worker"') && verifier.includes('name = "cwd-verifier"');
+  }
+
   async setReasoningEffort(effort) {
     if (!effort || effort === 'auto') return { changed: false, effort: effort || 'auto' };
     const before = await this.read();const ownership=await this.#ensureOwnership(before);const next = setTopLevelScalar(before, 'model_reasoning_effort', effort);
