@@ -37,7 +37,8 @@ if [[ "${CWD_INSTALL_NO_SYSTEMD:-0}" != "1" ]]; then
   cwd_systemctl "$SCOPE" is-active codex-worker-delegation.service >/dev/null 2>&1 && pass "$SCOPE service active" || fail "$SCOPE service active"
   if curl --silent --fail --max-time 2 "http://127.0.0.1:${PORT}/api/health" | "$NODE_BIN" -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{const j=JSON.parse(s);if(j.ok!==true)process.exit(1)})'; then pass 'loopback health endpoint'; else fail 'loopback health endpoint'; fi
   if PORT="$PORT" TOKEN_FILE="$INSTALL_ROOT/gateway.token" "$NODE_BIN" <<'NODE'
-const crypto=require('crypto'),fs=require('fs');
+import crypto from 'node:crypto';
+import fs from 'node:fs';
 const token=fs.readFileSync(process.env.TOKEN_FILE,'utf8').trim();
 if(!/^[A-Za-z0-9_-]{43}$/.test(token))process.exit(2);
 const nonce=crypto.randomBytes(24).toString('hex');
