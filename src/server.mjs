@@ -6,14 +6,14 @@ import { fileURLToPath } from 'node:url';
 import { StateStore, publicState, activeRouting, setRoutingMode, REASONING_EFFORTS } from './store.mjs';
 import { SecretVault } from './vault.mjs';
 import { ResponsesGateway } from './gateway.mjs';
-import { probeProvider, listProviderModels } from './provider.mjs';
+import { probeProvider, listProviderModels, modelKind } from './provider.mjs';
 import { toCodexModelsResponse } from './codex-models.mjs';
 import { CodexConfigManager, CODEX_GATEWAY_PROVIDER_ID, inspectTopLevel, sameTopLevelSelectors } from './codex-config.mjs';
-import { withCodexAppServer, resolveCodexBinary } from './app-server.mjs';
+import { CodexAppServerPool, withCodexAppServer, resolveCodexBinary } from './app-server.mjs';
 import { executionPlan } from './policy.mjs';
 import { WebAuth, MIN_PASSWORD_LENGTH } from './web-auth.mjs';
 import { readJson } from './http-json.mjs';
-import { WorkerTaskManager, WORKER_MAX_TOTAL_TIMEOUT_MS, isTerminalTask, isWorkerTimeout, errorDetails, normalizeWorkerTimeout } from './worker-jobs.mjs';
+import { WorkerTaskManager, WORKER_MAX_TOTAL_TIMEOUT_MS, WORKER_QUICK_TIMEOUT_MS, WORKER_QUICK_MAX_TOTAL_TIMEOUT_MS, isTerminalTask, isWorkerTimeout, errorDetails, normalizeWorkerTimeout, normalizeWorkerMaxTotalTimeout } from './worker-jobs.mjs';
 export { executionPlan } from './policy.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -22,6 +22,7 @@ const MODES = new Set(['AUTO', 'DELEGATE', 'MAIN']);
 const ROLES = new Set(['main', 'worker', 'verifier']);
 const PROVIDERS = new Set(['official', 'third_party']);
 const WORKER_SANDBOXES = new Set(['read-only', 'workspace-write', 'danger-full-access']);
+const WORKER_PROFILES = new Set(['standard', 'quick']);
 const MAX_WORKER_TASK_BYTES = 512 * 1024;
 const MAX_CWD_LENGTH = 4096;
 const MAX_MODEL_ID_LENGTH = 512;
@@ -37,7 +38,52 @@ export function createApp({ env = process.env, fetchImpl = fetch } = {}) {
   const vault = new SecretVault({ env });
   const webAuth = new WebAuth({ env });
   const gateway = new ResponsesGateway({ store, vault, fetchImpl });
-  const workerJobs = new WorkerTaskManager({ env });
+  const workerJobs = new WorkerTaskManager({
+    env,
+    onReview: async ({ task, decision, evidence, reason, extensionMs, grace }) => {
+      const base = {
+        taskId: task.taskId,
+        mode: task.mode,
+        role: task.role,
+        provider: task.provider,
+        model: task.model,
+        execution: task.execution,
+        profile: task.profile,
+        decision,
+        automatic: true,
+        reason: String(reason || '').slice(0, 500),
+        evidence: evidence?.state || null,
+        heartbeatAgeMs: evidence?.heartbeatAgeMs ?? null,
+        meaningfulProgressAgeMs: evidence?.meaningfulProgressAgeMs ?? null,
+        extensionMs: extensionMs || null,
+        grace: grace === true,
+        extensionCount: task.extensionCount || 0,
+        autoReviewCount: task.autoReviewCount || 0,
+        autoExtensionCount: task.autoExtensionCount || 0,
+        deadlineAt: task.deadlineAt,
+        reviewAt: task.reviewAt,
+        threadId: task.threadId,
+        turnId: task.turnId
+      };
+      await store.audit('worker.auto_review', base).catch(() => {});
+      if (decision === 'cancelled') await store.audit('worker.cancelled', { ...base, automatic: true }).catch(() => {});
+      if (decision === 'extended') await store.audit('worker.extended', { ...base, automatic: true }).catch(() => {});
+    },
+    onOrphan: async ({ task, reason }) => {
+      await store.audit('worker.orphaned', {
+        taskId: task.taskId,
+        mode: task.mode,
+        role: task.role,
+        provider: task.provider,
+        model: task.model,
+        execution: task.execution,
+        status: task.status,
+        threadId: task.threadId,
+        reason: String(reason || '').slice(0, 500)
+      }).catch(() => {});
+    }
+  });
+  const appServerPool = new CodexAppServerPool({ idleMs: Number(env.CWD_APP_SERVER_POOL_IDLE_MS || 5 * 60 * 1000) });
   const port = Number(env.CWD_PORT || 8788);
   const host = env.CWD_HOST || '127.0.0.1';
   const codex = new CodexConfigManager({ env, gatewayBaseUrl: `http://127.0.0.1:${port}/v1` });
@@ -50,7 +96,7 @@ export function createApp({ env = process.env, fetchImpl = fetch } = {}) {
       if (req.method === 'GET' && url.pathname === '/v1/models') return serveGatewayModels(req, res, { store, vault, fetchImpl, nativeCatalog: url.searchParams.has('client_version') });
       if (req.method === 'POST' && url.pathname === '/internal/worker/start') {
         if (!await authorizeInternal(req, store)) return sendJson(res, 401, { error: 'invalid internal token' });
-        const task = await startWorkerTask(await readJson(req), { store, env, codex, workerJobs });
+        const task = await startWorkerTask(await readJson(req), { store, env, codex, workerJobs, appServerPool });
         return sendJson(res, task.taskId ? 202 : 200, task);
       }
       if (req.method === 'POST' && url.pathname.startsWith('/internal/worker/cancel/')) {
@@ -76,8 +122,8 @@ export function createApp({ env = process.env, fetchImpl = fetch } = {}) {
       if (req.method === 'POST' && url.pathname === '/internal/worker/run') {
         if (!await authorizeInternal(req, store)) return sendJson(res, 401, { error: 'invalid internal token' });
         const body = await readJson(req);
-        if (body.waitForCompletion === true) return sendJson(res, 200, await executeWorker(body, { store, env, codex, workerJobs }));
-        const task = await startWorkerTask(body, { store, env, codex, workerJobs });
+        if (body.waitForCompletion === true) return sendJson(res, 200, await executeWorker(body, { store, env, codex, workerJobs, appServerPool }));
+        const task = await startWorkerTask(body, { store, env, codex, workerJobs, appServerPool });
         return sendJson(res, task.taskId ? 202 : 200, task);
       }
       if (req.method === 'GET' && url.pathname === '/api/auth/status') return sendJson(res, 200, await authStatus({ req, env, host, webAuth }));
@@ -102,7 +148,7 @@ export function createApp({ env = process.env, fetchImpl = fetch } = {}) {
         if (req.method === 'GET' && url.pathname === '/api/health') return sendJson(res, 200, { ok: true, version: '3.0.0', host, port, codexBinary: resolveCodexBinary(env), authRequired: await webAuth.isConfigured() || env.CWD_REQUIRE_AUTH === '1' || !isLoopback(host) });
         if (!await authorizeUi(req, env, host, webAuth)) return sendJson(res, 401, { error: 'unauthorized' });
         if (req.method === 'GET' && url.pathname === '/api/state') return sendJson(res, 200, publicState(await store.read()));
-        if (req.method === 'GET' && url.pathname === '/api/catalog') return sendJson(res, 200, await loadCatalog({ store, vault, env, fetchImpl }));
+        if (req.method === 'GET' && url.pathname === '/api/catalog') return sendJson(res, 200, await loadCatalog({ store, vault, env, fetchImpl, appServerPool }));
         if (req.method === 'PUT' && url.pathname === '/api/mode') {
           const { mode } = await readJson(req);
           if (!MODES.has(mode)) return sendJson(res, 400, { error: 'mode must be AUTO, DELEGATE, or MAIN' });
@@ -145,15 +191,19 @@ export function createApp({ env = process.env, fetchImpl = fetch } = {}) {
         if (req.method === 'POST' && url.pathname === '/api/provider/connectivity') {
           const state = await store.read(); if (!state.provider) return sendJson(res, 400, { error: 'configure provider first' });
           const body = await readJson(req); const apiKey = await vault.decrypt(state.provider.apiKeyCipher);
-          const models = [...new Set((Array.isArray(body.models) ? body.models : (await listProviderModels({ baseUrl: state.provider.baseUrl, apiKey, fetchImpl, extraHeaders: state.provider.headers })).map((item) => item.id)).map((model) => String(model || '').trim()).filter(Boolean))];
+          const listed = Array.isArray(body.models)
+            ? body.models.map((model) => ({ id: String(model || '').trim(), kind: modelKind(model) }))
+            : await listProviderModels({ baseUrl: state.provider.baseUrl, apiKey, fetchImpl, extraHeaders: state.provider.headers });
+          const modelKinds = new Map(); for (const item of listed) { const id = String(item?.id || '').trim(); if (id && !modelKinds.has(id)) modelKinds.set(id, item.kind || modelKind(id)); }
+          const models = [...modelKinds.keys()];
           if (!models.length) return sendJson(res, 400, { error: 'no models available to test' });
           if (models.length > 2000 || models.some((model)=>model.length > MAX_MODEL_ID_LENGTH)) return sendJson(res, 400, { error: 'model connectivity request exceeds safe limits' });
-          const results = await testProviderModels({ models, state, apiKey, fetchImpl });
+          const results = await testProviderModels({ models, modelKinds, state, apiKey, fetchImpl });
           await store.update((s) => { for (const result of results) if (result.ok && result.protocol !== 'unknown') s.protocolCache[result.model] = { protocol: result.protocol, detectedAt: new Date().toISOString(), probeOk: true }; return s; });
           return sendJson(res, 200, { results });
         }
         if (req.method === 'POST' && url.pathname === '/api/codex/install') {
-          const snap = await ensureCodexIntegration({ store, codex });
+          const snap = await ensureCodexIntegration({ store, codex, appServerPool });
           const next = await store.read();
           await store.audit('codex.installed', { providerId: snap.providerId, agents: snap.agents, topLevelPreserved: snap.topLevelPreserved });
           return sendJson(res, 200, publicState(next));
@@ -169,10 +219,10 @@ export function createApp({ env = process.env, fetchImpl = fetch } = {}) {
         }
         if (req.method === 'POST' && url.pathname === '/api/verify/coexistence') {
           const body = await readJson(req);
-          return sendJson(res, 200, await verifyCoexistence({ body, store, codex, env }));
+          return sendJson(res, 200, await verifyCoexistence({ body, store, codex, env, appServerPool }));
         }
         if (req.method === 'POST' && url.pathname === '/api/worker/start') {
-          const task = await startWorkerTask(await readJson(req), { store, env, codex, workerJobs });
+          const task = await startWorkerTask(await readJson(req), { store, env, codex, workerJobs, appServerPool });
           return sendJson(res, task.taskId ? 202 : 200, task);
         }
         if (req.method === 'GET' && url.pathname.startsWith('/api/worker/status/')) {
@@ -182,8 +232,8 @@ export function createApp({ env = process.env, fetchImpl = fetch } = {}) {
         }
         if (req.method === 'POST' && url.pathname === '/api/worker/run') {
           const body = await readJson(req);
-          if (body.waitForCompletion === true) return sendJson(res, 200, await executeWorker(body, { store, env, codex, workerJobs }));
-          const task = await startWorkerTask(body, { store, env, codex, workerJobs });
+          if (body.waitForCompletion === true) return sendJson(res, 200, await executeWorker(body, { store, env, codex, workerJobs, appServerPool }));
+          const task = await startWorkerTask(body, { store, env, codex, workerJobs, appServerPool });
           return sendJson(res, task.taskId ? 202 : 200, task);
         }
         return sendJson(res, 404, { error: 'not found' });
@@ -194,8 +244,8 @@ export function createApp({ env = process.env, fetchImpl = fetch } = {}) {
       return sendJson(res, error.statusCode || 500, { error: error.message, code: error.code || null, taskId: error.taskId || null });
     }
   });
-  server.on('close', () => workerJobs.close());
-  return { server, host, port, store, workerJobs };
+  server.on('close', () => { void workerJobs.close(); void appServerPool.close(); });
+  return { server, host, port, store, workerJobs, appServerPool };
 }
 
 async function authenticatedHookHealth(req, res, url, store) {
@@ -220,7 +270,7 @@ async function serveGatewayModels(req, res, { store, vault, fetchImpl, nativeCat
   const apiKey = await vault.decrypt(state.provider.apiKeyCipher);
   const models = await listProviderModels({ baseUrl: state.provider.baseUrl, apiKey, fetchImpl, extraHeaders: state.provider.headers });
   if (nativeCatalog) return sendJson(res, 200, toCodexModelsResponse(models));
-  return sendJson(res, 200, { object: 'list', data: models.map((item) => ({ id: item.id, object: 'model', owned_by: item.ownedBy || state.provider.name || 'third-party' })) });
+  return sendJson(res, 200, { object: 'list', data: models.map((item) => ({ id: item.id, object: 'model', owned_by: item.ownedBy || state.provider.name || 'third-party', kind: item.kind || modelKind(item.id) })) });
 }
 
 async function prepareWorker(body, { store, env }) {
@@ -245,7 +295,12 @@ async function prepareWorker(body, { store, env }) {
   const sandbox = roleName === 'verifier' ? 'read-only' : String(body.sandbox || 'workspace-write');
   if (!WORKER_SANDBOXES.has(sandbox)) { const error = new Error('sandbox must be read-only, workspace-write, or danger-full-access'); error.statusCode = 400; throw error; }
   if (sandbox === 'danger-full-access' && env.CWD_ALLOW_DANGER_FULL_ACCESS !== '1') { const error = new Error('danger-full-access is disabled for automated Worker routes; set CWD_ALLOW_DANGER_FULL_ACCESS=1 only after an explicit operator risk decision'); error.statusCode = 403; error.code = 'DANGER_SANDBOX_DISABLED'; throw error; }
-  return { kind: 'app_server', state, mode, role: roleName, route, plan, task: body.task, cwd, sandbox, timeoutMs: normalizeWorkerTimeout(body.timeoutMs) };
+  const profile = String(body.profile || 'standard').trim().toLowerCase();
+  if (!WORKER_PROFILES.has(profile)) { const error = new Error('profile must be standard or quick'); error.statusCode = 400; error.code = 'INVALID_WORKER_PROFILE'; throw error; }
+  const timeoutMs = body.timeoutMs === undefined && profile === 'quick' ? WORKER_QUICK_TIMEOUT_MS : normalizeWorkerTimeout(body.timeoutMs);
+  const defaultMaxTotal = profile === 'quick' ? WORKER_QUICK_MAX_TOTAL_TIMEOUT_MS : WORKER_MAX_TOTAL_TIMEOUT_MS;
+  const maxTotalTimeoutMs = normalizeWorkerMaxTotalTimeout(body.maxTotalTimeoutMs === undefined ? defaultMaxTotal : body.maxTotalTimeoutMs, timeoutMs);
+  return { kind: 'app_server', state, mode, role: roleName, route, plan, task: body.task, cwd, sandbox, profile, timeoutMs, maxTotalTimeoutMs };
 }
 
 function progressFromNotification(message) {
@@ -256,29 +311,29 @@ function progressFromNotification(message) {
   if (method.includes('item/started')) return { phase: 'executing', progress: 35, message: `Worker 正在执行：${item.type || '任务步骤'}`, event: { type: method, message: `开始：${item.type || '任务步骤'}`, details } };
   if (method.includes('item/completed')) return { phase: 'executing', progress: 70, message: `Worker 已完成：${item.type || '任务步骤'}`, event: { type: method, message: `完成：${item.type || '任务步骤'}`, details } };
   if (method === 'turn/completed') return { phase: 'completion', progress: 95, message: 'Worker 已收到完成事件，正在整理结果', event: { type: method, message: '收到完成事件', details } };
-  if (method) return { phase: 'running', progress: 25, message: `Worker 收到进度事件：${method}`, event: { type: method, message: `收到：${method}`, details } };
+  if (method) return { phase: 'running', message: `Worker 收到进度事件：${method}`, event: { type: method, message: `收到：${method}`, details } };
   return null;
 }
 
-async function startWorkerTask(body, { store, env, codex, workerJobs }) {
+async function startWorkerTask(body, { store, env, codex, workerJobs, appServerPool }) {
   const prepared = await prepareWorker(body, { store, env });
   if (prepared.kind === 'native') return { ...prepared, status: 'delegation_required', taskId: null, message: '当前官方路由需要由主控 Codex 使用 native spawn_agent 执行。' };
-  const { mode, role, route, plan, task, cwd, sandbox, timeoutMs } = prepared;
-  return workerJobs.start({ mode, role, execution: plan.execution, provider: route.provider, model: route.model, effort: route.effort || 'auto', cwd, timeoutMs }, async ({ taskId, report, registerCancel, registerExtend }) => {
-    const auditBase = { taskId, mode, role, provider: route.provider, model: route.model, execution: plan.execution, effort: route.effort || 'auto' };
+  const { mode, role, route, plan, task, cwd, sandbox, profile, timeoutMs, maxTotalTimeoutMs } = prepared;
+  return workerJobs.start({ mode, role, execution: plan.execution, provider: route.provider, model: route.model, effort: route.effort || 'auto', profile, cwd, timeoutMs, maxTotalTimeoutMs }, async ({ taskId, report, registerCancel, registerExtend }) => {
+    const auditBase = { taskId, mode, role, provider: route.provider, model: route.model, execution: plan.execution, effort: route.effort || 'auto', profile };
     let unregisterCancel = () => {}; let unregisterExtend = () => {}; let activeClient = null; let turnTimeoutMs = timeoutMs;
     try {
       unregisterExtend = registerExtend((extraMs) => { turnTimeoutMs += extraMs; return activeClient ? activeClient.extendTurnTimeout(extraMs) : { extraMs, pending: true, deadlineAt: null }; });
       if (route.provider === 'third_party') {
         await report({ phase: 'integration', progress: 8, message: '正在确认 namespaced Codex provider 集成', event: { type: 'integration.start', message: '确认 Codex provider 集成' } });
-        await ensureCodexIntegration({ store, codex });
+        await ensureCodexIntegration({ store, codex, appServerPool });
         await report({ phase: 'integration', progress: 12, message: 'Codex provider 集成已确认', event: { type: 'integration.completed', message: 'Codex provider 集成已确认' } });
       }
       const result = await withCodexAppServer((client) => {
         activeClient = client;
         unregisterCancel = registerCancel((reason) => client.abort(reason));
         return client.runThread({ model: route.model, modelProvider: route.provider === 'third_party' ? CODEX_GATEWAY_PROVIDER_ID : 'openai', prompt: task, cwd, sandbox, effort: route.effort || 'auto', timeoutMs: turnTimeoutMs, onProgress: (message) => { const progress = progressFromNotification(message); if (progress) void report(progress); }, developerInstructions: role === 'verifier' ? 'Verify independently. Prefer inspection and tests; do not modify implementation files.' : 'Execute the assigned implementation task and report concrete results.' });
-      }, { env });
+      }, { env, pool: appServerPool, overallTimeoutMs: maxTotalTimeoutMs + 5000 });
       if (result.status !== 'completed') { const error = new Error(`worker execution failed: status=${result.status || 'unknown'}`); error.code = 'WORKER_FAILED'; error.threadId = result.threadId; throw error; }
       const output = { ...plan, mode, role, provider: route.provider, model: route.model, taskId, ...result };
       await store.audit('worker.completed', { ...auditBase, threadId: result.threadId, status: result.status, error: null }).catch(() => {});
@@ -307,24 +362,24 @@ async function extendWorkerTask(taskId, body = {}, { store, workerJobs }) {
   return extended;
 }
 
-async function executeWorker(body, { store, env, codex, workerJobs }) {
-  const started = await startWorkerTask(body, { store, env, codex, workerJobs });
+async function executeWorker(body, { store, env, codex, workerJobs, appServerPool }) {
+  const started = await startWorkerTask(body, { store, env, codex, workerJobs, appServerPool });
   if (!started.taskId) return started;
-  const waited = await workerJobs.wait(started.taskId, { timeoutMs: WORKER_MAX_TOTAL_TIMEOUT_MS + 5000 });
+  const waited = await workerJobs.wait(started.taskId, { timeoutMs: Number(started.maxTotalTimeoutMs || WORKER_MAX_TOTAL_TIMEOUT_MS) + 5000 });
   if (!waited || !isTerminalTask(waited)) { const error = new Error(`Worker task is still running; taskId=${started.taskId}`); error.code = 'WORKER_TIMEOUT'; error.taskId = started.taskId; throw error; }
   if (waited.status !== 'completed') { const error = new Error(waited.error?.message || `Worker task ${waited.status}`); error.code = waited.status === 'timed_out' ? 'WORKER_TIMEOUT' : waited.status === 'cancelled' ? 'WORKER_CANCELLED' : 'WORKER_FAILED'; error.taskId = started.taskId; throw error; }
   return { ...waited.result, taskId: started.taskId, task: waited };
 }
 
-async function verifyCoexistence({ body, store, codex, env }) {
+async function verifyCoexistence({ body, store, codex, env, appServerPool }) {
   const state = await store.read(); if (!state.provider) throw new Error('configure New API before coexistence verification');
   const model = String(body.model || firstThirdPartyModel(state) || '').trim(); if (!model) throw new Error('select at least one third-party model before coexistence verification');
-  const selectorsBefore = inspectTopLevel(await codex.read()); const integration = await ensureCodexIntegration({ store, codex });
+  const selectorsBefore = inspectTopLevel(await codex.read()); const integration = await ensureCodexIntegration({ store, codex, appServerPool });
   const proof = await withCodexAppServer(async (client) => {
     const before = await client.getAccount({ refreshToken: false });
     const thread = await client.runThread({ model, modelProvider: CODEX_GATEWAY_PROVIDER_ID, prompt: 'Reply with exactly CWD_COEXISTENCE_OK. Do not use tools.', cwd: body.cwd || process.cwd(), sandbox: 'read-only', effort: routeEffortForModel(state, 'third_party', model), developerInstructions: 'This is a read-only provider coexistence probe. Do not use tools or modify files; answer only with the requested marker.', timeoutMs: Number(body.timeoutMs || 120000) });
     const after = await client.getAccount({ refreshToken: false }); return { before, thread, after };
-  }, { env });
+  }, { env, pool: appServerPool, overallTimeoutMs: Number(body.timeoutMs || 120000) + 15000 });
   const selectorsAfter = inspectTopLevel(await codex.read()); const officialBefore = proof.before?.account?.type === 'chatgpt'; const officialAfter = proof.after?.account?.type === 'chatgpt'; const selectorStable = sameTopLevelSelectors(selectorsBefore, selectorsAfter); const thirdPartyThreadOk = proof.thread?.status === 'completed' && Boolean(proof.thread?.output?.trim()); const markerObserved = proof.thread?.output?.includes('CWD_COEXISTENCE_OK') || false;
   const result = { ok: officialBefore && officialAfter && selectorStable && thirdPartyThreadOk, officialChatGPTBefore: summarizeAccount(proof.before), officialChatGPTAfter: summarizeAccount(proof.after), thirdParty: { model, modelProvider: CODEX_GATEWAY_PROVIDER_ID, threadId: proof.thread?.threadId || null, status: proof.thread?.status || null, markerObserved }, integrationInstalled: true, integrationProviderId: integration.providerId, globalSelectorUntouched: selectorStable, selectorsBefore: publicSelectors(selectorsBefore), selectorsAfter: publicSelectors(selectorsAfter), proof: 'A third-party App Server thread completed between two account/read checks while the top-level official selector stayed byte-equivalent at the parsed selector level.' };
   await store.audit('coexistence.verified', { ok: result.ok, model, markerObserved, officialBefore, officialAfter, selectorStable }); return result;
@@ -335,9 +390,9 @@ function routeEffortForModel(state, provider, model) { for (const routes of Obje
 function summarizeAccount(result) { const a = result?.account || null; return a ? { type: a.type || null, planType: a.planType || null, email: a.email || null, requiresOpenaiAuth: result?.requiresOpenaiAuth ?? null } : { type: null, planType: null, email: null, requiresOpenaiAuth: result?.requiresOpenaiAuth ?? null }; }
 function publicSelectors(value = {}) { return Object.fromEntries(['model_provider','model'].filter((k)=>value[k]?.raw).map((k)=>[k,value[k].raw])); }
 
-async function loadCatalog({ store, vault, env, fetchImpl }) {
+async function loadCatalog({ store, vault, env, fetchImpl, appServerPool }) {
   const state = await store.read(); const result = { official: { ok: false, models: [], account: null, requiresOpenaiAuth: null, error: null }, thirdParty: { ok: false, models: [], configured: Boolean(state.provider), error: null } };
-  try { const official = await withCodexAppServer(async (client) => { const [models, account] = await Promise.all([client.listModels(), client.getAccount({ refreshToken: false })]); return { models, account }; }, { env }); result.official.models = official.models; result.official.account = official.account?.account || null; result.official.requiresOpenaiAuth = Boolean(official.account?.requiresOpenaiAuth); result.official.ok = true; } catch (error) { result.official.error = error.message; }
+  try { const official = await withCodexAppServer(async (client) => { const [models, account] = await Promise.all([client.listModels(), client.getAccount({ refreshToken: false })]); return { models, account }; }, { env, pool: appServerPool, overallTimeoutMs: 30000 }); result.official.models = official.models; result.official.account = official.account?.account || null; result.official.requiresOpenaiAuth = Boolean(official.account?.requiresOpenaiAuth); result.official.ok = true; } catch (error) { result.official.error = error.message; }
   if (!state.provider) result.thirdParty.error = 'New API provider is not configured'; else { try { const apiKey = await vault.decrypt(state.provider.apiKeyCipher); result.thirdParty.models = await listProviderModels({ baseUrl: state.provider.baseUrl, apiKey, fetchImpl, extraHeaders: state.provider.headers }); result.thirdParty.ok = true; } catch (error) { result.thirdParty.error = error.message; } }
   return result;
 }
@@ -346,7 +401,11 @@ async function authorizeUi(req, env, host, webAuth) { const token = env.CWD_WEB_
 function isLoopback(host) { return ['127.0.0.1', '::1', 'localhost'].includes(host); }
 function secureCookie(env, host) { return env.CWD_COOKIE_SECURE === '1' || !isLoopback(host); }
 async function authStatus({ req, env, host, webAuth }) { const configured = await webAuth.isConfigured(); return { configured, authenticated: configured ? webAuth.authenticated(req) : isLoopback(host) && env.CWD_REQUIRE_AUTH !== '1', required: configured || env.CWD_REQUIRE_AUTH === '1' || !isLoopback(host), minPasswordLength: MIN_PASSWORD_LENGTH, loopback: isLoopback(host) }; }
-async function ensureCodexIntegration({ store, codex }) { await store.ensureGatewayToken(); const snap = await codex.install(); await store.update((s) => { s.installed = true; return s; }); return snap; }
+async function ensureCodexIntegration({ store, codex, appServerPool }) {
+  await store.ensureGatewayToken(); const state = await store.read();
+  if (state.installed && await codex.isInstalled()) return { providerId: CODEX_GATEWAY_PROVIDER_ID, agents: ['cwd-worker', 'cwd-verifier'], topLevelPreserved: true, cached: true };
+  const snap = await codex.install(); await store.update((s) => { s.installed = true; return s; }); await appServerPool?.reset(); return snap;
+}
 async function syncTopLevelReasoning(state, codex) { const main = activeRouting(state, state.mode).main; if (main?.provider !== 'official' || !main.effort || main.effort === 'auto') return { changed: false, scope: 'app-server-route-only', effort: main?.effort || 'auto' }; return { ...(await codex.setReasoningEffort(main.effort)), scope: 'official-top-level-default' }; }
 function validateRouting(roles) {
   if (!roles || typeof roles !== 'object') throw new Error('roles is required');
@@ -363,9 +422,9 @@ function validateProvider(body) {
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('baseUrl must be an http(s) URL without embedded credentials');
   if (!['auto', 'responses', 'chat'].includes(body.protocol || 'auto')) throw new Error('protocol must be auto, responses, or chat');
 }
-async function testProviderModels({ models, state, apiKey, fetchImpl }) {
+async function testProviderModels({ models, modelKinds = new Map(), state, apiKey, fetchImpl }) {
   const results = []; let cursor = 0;
-  const worker = async () => { while (cursor < models.length) { const index = cursor++; const model = models[index]; const startedAt = Date.now(); try { const result = await probeProvider({ baseUrl: state.provider.baseUrl, apiKey, model, fetchImpl, extraHeaders: state.provider.headers, timeoutMs: 30000 }); results[index] = { model, ok: result.ok === true, protocol: result.protocol, status: result.status || null, latencyMs: Date.now() - startedAt, endpointExists: result.endpointExists ?? true, error: result.error || null }; } catch (error) { results[index] = { model, ok: false, protocol: 'unknown', status: null, latencyMs: Date.now() - startedAt, endpointExists: false, error: error.message }; } } };
+  const worker = async () => { while (cursor < models.length) { const index = cursor++; const model = models[index]; const kind = modelKinds.get(model) || modelKind(model); const startedAt = Date.now(); try { const result = await probeProvider({ baseUrl: state.provider.baseUrl, apiKey, model, kind, fetchImpl, extraHeaders: state.provider.headers, timeoutMs: 30000 }); results[index] = { model, kind, ok: result.ok === true, protocol: result.protocol, status: result.status || null, latencyMs: Date.now() - startedAt, endpointExists: result.endpointExists ?? true, error: result.error || null }; } catch (error) { results[index] = { model, kind, ok: false, protocol: 'unknown', status: null, latencyMs: Date.now() - startedAt, endpointExists: false, error: error.message }; } } };
   await Promise.all(Array.from({ length: Math.min(3, models.length) }, worker)); return results;
 }
 function sanitizeHeaders(headers) { if (!headers || typeof headers !== 'object' || Array.isArray(headers)) return {}; const out = {}; let count=0; for (const [k,v] of Object.entries(headers)) { if (count>=32) break; if (/^[A-Za-z0-9-]{1,64}$/.test(k) && typeof v === 'string' && v.length <= 8192 && !/[\0\r\n]/.test(v) && !['authorization','proxy-authorization','content-type','content-length','host','connection','cookie','set-cookie'].includes(k.toLowerCase())) { out[k] = v; count++; } } return out; }
