@@ -5,7 +5,7 @@ const VISIBLE_ROLES = { AUTO: ['main'], DELEGATE: ['main', 'worker'], MAIN: ['ma
 const MODE_LABELS = { AUTO: 'AUTO', DELEGATE: 'WORKER', MAIN: 'MAIN' };
 const MODE_HELP = {
   AUTO: '自动协调：只选择一个主模型，Worker 和 Verifier 继承该模型；是否实际委派由任务决定。',
-  DELEGATE: 'Worker 模式：Main 负责协调，Worker 负责执行；真实任务通过 delegate_worker 或路由测试启动。Verifier 是只读验证角色，调用时继承 Worker 的模型与思考强度。',
+  DELEGATE: 'Worker 模式：Main 负责协调，Worker 负责执行；真实任务通过 delegate_worker 或路由测试启动。主控观察点由服务端自动处理：有实质进展就有界续期，失去进展或心跳就主动终止。Verifier 是只读验证角色，调用时继承 Worker 的模型与思考强度。',
   MAIN: 'Main 模式：只运行主线程，禁用 Worker delegation。'
 };
 let state = null;
@@ -39,7 +39,7 @@ function providerKey(value) { return value === 'third_party' ? 'thirdParty' : 'o
 function modeLabel(mode) { return MODE_LABELS[mode] || mode; }
 function modelRows(provider) {
   const rows = catalog?.[providerKey(provider)]?.models || [];
-  return rows.map((model) => ({ id: model.model || model.id, name: model.displayName || model.name || model.model || model.id })).filter((model) => model.id);
+  return rows.map((model) => ({ id: model.model || model.id, name: model.displayName || model.name || model.model || model.id, kind: model.kind || 'chat' })).filter((model) => model.id && !(provider === 'third_party' && model.kind === 'embedding'));
 }
 
 function modelInfo(provider, model) {
@@ -116,8 +116,8 @@ function routeRow(mode, role, route) {
   const current = route?.model || '';
   const effort = route?.effort || 'auto';
   const options = [...rows];
-  if (current && !options.some((model) => model.id === current)) options.unshift({ id: current, name: `${current} · 当前/手填` });
-  return `<div class="route-row" data-route="${id}"><div class="route-role"><b>${role.toUpperCase()}</b><span class="route-kind" id="kind-${id}"></span></div><select class="route-provider" data-mode="${mode}" data-role="${role}"><option value="official" ${provider === 'official' ? 'selected' : ''}>Official ChatGPT</option><option value="third_party" ${provider === 'third_party' ? 'selected' : ''}>New API</option></select><div class="model-field"><select class="route-model" data-mode="${mode}" data-role="${role}">${options.map((model) => `<option value="${esc(model.id)}" ${model.id === current ? 'selected' : ''}>${esc(model.name)} (${esc(model.id)})</option>`).join('')}<option value="__custom__">手动输入…</option></select><input class="route-custom" data-mode="${mode}" data-role="${role}" value="${esc(current && !rows.some((model) => model.id === current) ? current : '')}" placeholder="模型 ID" hidden></div><label class="effort-field">思考强度<select class="route-effort" data-mode="${mode}" data-role="${role}">${effortOptions(provider, current, effort)}</select></label></div>`;
+  if (current && !options.some((model) => model.id === current)) options.unshift({ id: current, name: `${current} · 当前/手填`, kind: modelInfo(provider, current)?.kind || 'chat' });
+  return `<div class="route-row" data-route="${id}"><div class="route-role"><b>${role.toUpperCase()}</b><span class="route-kind" id="kind-${id}"></span></div><select class="route-provider" data-mode="${mode}" data-role="${role}"><option value="official" ${provider === 'official' ? 'selected' : ''}>Official ChatGPT</option><option value="third_party" ${provider === 'third_party' ? 'selected' : ''}>New API</option></select><div class="model-field"><select class="route-model" data-mode="${mode}" data-role="${role}">${options.map((model) => `<option value="${esc(model.id)}" ${model.id === current ? 'selected' : ''}>${esc(model.name)}${model.kind === 'embedding' ? ' · embedding 仅连通性' : ''} (${esc(model.id)})</option>`).join('')}<option value="__custom__">手动输入…</option></select><input class="route-custom" data-mode="${mode}" data-role="${role}" value="${esc(current && !rows.some((model) => model.id === current) ? current : '')}" placeholder="模型 ID" hidden></div><label class="effort-field">思考强度<select class="route-effort" data-mode="${mode}" data-role="${role}">${effortOptions(provider, current, effort)}</select></label></div>`;
 }
 
 function renderRouting() {
@@ -178,7 +178,7 @@ function renderModelTests() {
   if (!models.length) { $('modelTests').innerHTML = '<p class="muted">暂无 New API 模型目录。请先到“New API 配置”保存并刷新。</p>'; return; }
   $('modelTests').innerHTML = models.map((model) => {
     const result = modelTestResults.get(model.id); const status = result ? `${result.ok ? 'PASS' : 'FAIL'} · ${result.protocol || 'unknown'}${result.latencyMs ? ` · ${result.latencyMs} ms` : ''}` : '未测试';
-    return `<div class="model-test-row" data-model="${esc(model.id)}"><div><b>${esc(model.name || model.id)}</b><span>${esc(model.id)}</span></div><span class="model-test-status ${result?.ok ? 'ok' : result ? 'bad' : ''}">${esc(status)}</span><button class="test-one secondary" data-model="${esc(model.id)}">测试</button></div>`;
+    return `<div class="model-test-row" data-model="${esc(model.id)}"><div><b>${esc(model.name || model.id)}</b><span>${esc(model.id)}${model.kind === 'embedding' ? ' · embedding / 向量模型' : ''}</span></div><span class="model-test-status ${result?.ok ? 'ok' : result ? 'bad' : ''}">${esc(status)}</span><button class="test-one secondary" data-model="${esc(model.id)}">测试</button></div>`;
   }).join('');
   document.querySelectorAll('.test-one').forEach((button) => button.onclick = () => runConnectivity([button.dataset.model]));
 }
@@ -255,9 +255,10 @@ function workerTaskText(task) {
     `任务 ID：${task.taskId || '无（当前路由需要主控 native spawn_agent）'}`,
     `状态：${task.status || 'unknown'} · 阶段：${task.phase || '—'} · 进度：${task.progress ?? 0}%`,
     `模型：${task.provider || '—'} / ${task.model || '—'} · 思考强度：${task.effort || 'auto'}`,
-    `租约：${task.deadlineAt || '—'} · 主控观察点：${task.reviewAt || '—'}${task.reviewDue ? ' · 等待主控决定续期或终止' : ''} · 已续期：${task.extensionCount || 0} 次`,
+    `租约：${task.deadlineAt || '—'} · 自动观察点：${task.reviewAt || '—'}${task.reviewDue ? ' · 正在自动检查' : ''} · 已续期：${task.extensionCount || 0} 次（自动 ${task.autoExtensionCount || 0}）`,
     `最近心跳：${task.lastHeartbeatAt || '—'}`,
-    `最近进度事件：${task.lastProgressAt || '—'}`,
+    `最近实质进展：${task.lastMeaningfulProgressAt || task.lastProgressAt || '—'} · 判定：${task.progressEvidence?.state || '—'}${task.progressEvidence?.meaningfulProgressAgeMs != null ? ` · 已 ${Math.round(task.progressEvidence.meaningfulProgressAgeMs / 1000)} 秒未有实质进展` : ''}`,
+    task.lastReviewDecision ? `最近自动决策：${task.lastReviewDecision} · ${task.lastReviewReason || '—'} · 自动观察 ${task.autoReviewCount || 0} 次` : '',
     task.cancelRequestedAt ? `取消请求：${task.cancelRequestedAt} · ${task.cancelReason || '—'}` : '',
     `消息：${task.message || '—'}`,
     task.error ? `错误：${task.error.code || task.error.name || 'worker_error'} · ${task.error.message}` : '',
@@ -277,7 +278,7 @@ async function watchWorkerTask(taskId) {
   try {
     $('runWorker').disabled = true;
     $('runResult').textContent = '正在创建 Worker 任务…';
-    const started = await api('/api/worker/start', { method: 'POST', body: JSON.stringify({ role: $('testRole').value, task: $('testTask').value }) });
+    const started = await api('/api/worker/start', { method: 'POST', body: JSON.stringify({ role: $('testRole').value, task: $('testTask').value, profile: 'quick' }) });
     if (!started.taskId) { $('runResult').textContent = workerTaskText(started); return; }
     sessionStorage.setItem('cwd-last-worker-task', started.taskId);
     $('runResult').textContent = workerTaskText(started);
