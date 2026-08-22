@@ -1,4 +1,16 @@
-# Production seal and archival acceptance
+# Production seal and archival acceptance / 生产封存与归档验收
+
+## 中文概览
+
+生产封存不是一句“能启动”或“测试通过”，而是对一台真实登录的 ChatGPT Linux / Codex 设备执行的分层验收。它分别检查项目控制的核心运行链路、官方 Desktop provider binding，以及最终是否满足归档条件。
+
+真实共存证明、真实第三方 Worker、完整网关链路可以通过，而严格封存仍可能失败。当前官方 model/list 没有足够的第三方 provider binding，或者 New API 目录中有模型返回上游错误时，报告必须保留 NOT_SEALED / NOT_ARCHIVE_READY，而不能隐藏失败或修改官方 selector。
+
+## English overview
+
+Production sealing is not a claim that the service merely starts or that unit tests pass. It is a layered acceptance run on a real signed-in ChatGPT Linux / Codex installation. The layers distinguish the project-controlled runtime, provider-correct official Desktop binding, and final archival readiness.
+
+Real coexistence, a real third-party Worker, and the complete gateway path may pass while the strict seal remains negative. When the current official model/list surface lacks sufficient third-party provider binding, or a model in the New API catalog returns an upstream error, the report must remain NOT_SEALED / NOT_ARCHIVE_READY. Failures are never hidden and official selectors are never rewritten to manufacture a pass.
 
 This document defines the release boundary for `codex-worker-delegation` on the official ChatGPT Linux / bundled Codex runtime. The project does not use “perfect” to mean “no future upstream change can ever happen”. A sealed release means that every project-controlled boundary is reproducible, reversible, fail-closed, and proven against a recorded official Linux package; repository archival additionally requires the current official Desktop model surface to expose provider-correct third-party models rather than a catalog-only fake merge.
 
