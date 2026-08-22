@@ -12,13 +12,18 @@ const MAX_MODEL_NAME_LENGTH = 1024;
 export function endpoints(baseUrl) {
   const u = new URL(baseUrl); if (!['http:', 'https:'].includes(u.protocol)) throw new Error('Provider URL must use http or https'); if (u.username || u.password) throw new Error('Provider URL must not contain credentials'); u.hash = ''; u.search = '';
   let p = u.pathname.replace(/\/+$/, '');
-  if (p.endsWith('/v1/responses')) { const root = p.slice(0, -'/responses'.length); return { responses: withPath(u, p), chat: withPath(u, `${root}/chat/completions`), models: withPath(u, `${root}/models`), apiRoot: withPath(u, root) }; }
-  if (p.endsWith('/v1/chat/completions')) { const root = p.slice(0, -'/chat/completions'.length); return { responses: withPath(u, `${root}/responses`), chat: withPath(u, p), models: withPath(u, `${root}/models`), apiRoot: withPath(u, root) }; }
-  if (p.endsWith('/v1/models')) { const root = p.slice(0, -'/models'.length); return { responses: withPath(u, `${root}/responses`), chat: withPath(u, `${root}/chat/completions`), models: withPath(u, p), apiRoot: withPath(u, root) }; }
+  if (p.endsWith('/v1/responses')) { const root = p.slice(0, -'/responses'.length); return { responses: withPath(u, p), chat: withPath(u, `${root}/chat/completions`), embeddings: withPath(u, `${root}/embeddings`), models: withPath(u, `${root}/models`), apiRoot: withPath(u, root) }; }
+  if (p.endsWith('/v1/chat/completions')) { const root = p.slice(0, -'/chat/completions'.length); return { responses: withPath(u, `${root}/responses`), chat: withPath(u, p), embeddings: withPath(u, `${root}/embeddings`), models: withPath(u, `${root}/models`), apiRoot: withPath(u, root) }; }
+  if (p.endsWith('/v1/embeddings')) { const root = p.slice(0, -'/embeddings'.length); return { responses: withPath(u, `${root}/responses`), chat: withPath(u, `${root}/chat/completions`), embeddings: withPath(u, p), models: withPath(u, `${root}/models`), apiRoot: withPath(u, root) }; }
+  if (p.endsWith('/v1/models')) { const root = p.slice(0, -'/models'.length); return { responses: withPath(u, `${root}/responses`), chat: withPath(u, `${root}/chat/completions`), embeddings: withPath(u, `${root}/embeddings`), models: withPath(u, p), apiRoot: withPath(u, root) }; }
   if (!p.endsWith('/v1')) p = `${p}/v1`.replace(/^\/\//, '/');
-  return { responses: withPath(u, `${p}/responses`), chat: withPath(u, `${p}/chat/completions`), models: withPath(u, `${p}/models`), apiRoot: withPath(u, p) };
+  return { responses: withPath(u, `${p}/responses`), chat: withPath(u, `${p}/chat/completions`), embeddings: withPath(u, `${p}/embeddings`), models: withPath(u, `${p}/models`), apiRoot: withPath(u, p) };
 }
 function withPath(url, pathname) { const u = new URL(url); u.pathname = pathname || '/'; return u.toString(); }
+export function modelKind(model, metadata = {}) {
+  const value = [model, metadata.kind, metadata.type, metadata.modelType, metadata.model_type, metadata.name].filter(Boolean).join(' ');
+  return /embedding|(?:^|[-_:/.])embed(?:ding)?(?:$|[-_:/.])/i.test(value) ? 'embedding' : 'chat';
+}
 export function unsupportedEndpoint(status, bodyText = '') { return UNSUPPORTED_CODES.has(status) || UNSUPPORTED_PATTERNS.some((r) => r.test(bodyText)); }
 const PROTOCOL_MISMATCH_PATTERNS = [/expr_path\s*=\s*messages/i,/missing\s+(?:required\s+)?(?:parameter|field).*messages/i,/messages.*(?:missing|required|too short)/i,/['"]messages['"]/i,/stream\s+must\s+be\s+set\s+to\s+true/i,/invalid\s+input\s+type/i,/convert_request_failed/i,/not\s+implemented/i];
 export function shouldTryChatFallback(status, bodyText = '') { return unsupportedEndpoint(status, bodyText) || (status >= 500 && status < 504) || (status !== 401 && status !== 403 && PROTOCOL_MISMATCH_PATTERNS.some((pattern) => pattern.test(bodyText))); }
@@ -55,14 +60,20 @@ export async function listProviderModels({ baseUrl, apiKey, timeoutMs = 10000, f
     const id=String(rawId).trim(); if(!id || id.length>MAX_MODEL_ID_LENGTH) continue; if(seen.has(id))continue; seen.add(id);
     const rawName=String(item?.display_name || item?.displayName || item?.name || id); const model={ id, name: rawName.slice(0,MAX_MODEL_NAME_LENGTH), ownedBy: item?.owned_by || item?.ownedBy || null };
     const supportedReasoningEfforts = item?.supportedReasoningEfforts || item?.supported_reasoning_levels; const defaultReasoningEffort = item?.defaultReasoningEffort || item?.default_reasoning_level;
-    if (supportedReasoningEfforts) model.supportedReasoningEfforts = supportedReasoningEfforts; if (defaultReasoningEffort) model.defaultReasoningEffort = defaultReasoningEffort; normalized.push(model);
+    if (supportedReasoningEfforts) model.supportedReasoningEfforts = supportedReasoningEfforts; if (defaultReasoningEffort) model.defaultReasoningEffort = defaultReasoningEffort; const kind = modelKind(id, { ...item, name: rawName }); if (kind !== 'chat') model.kind = kind; normalized.push(model);
   }
   return normalized;
 }
 
-export async function probeProvider({ baseUrl, apiKey, model, timeoutMs = 10000, fetchImpl = fetch, extraHeaders = {} }) {
+export async function probeProvider({ baseUrl, apiKey, model, kind = null, timeoutMs = 10000, fetchImpl = fetch, extraHeaders = {} }) {
   const normalizedModel=String(model||'').trim(); if (!normalizedModel) throw new Error('model is required for protocol detection'); if(normalizedModel.length>MAX_MODEL_ID_LENGTH)throw new Error(`model exceeds ${MAX_MODEL_ID_LENGTH} characters`);
   const ep = endpoints(baseUrl); const common = { method: 'POST', headers: authHeaders(apiKey, extraHeaders), signal: AbortSignal.timeout(timeoutMs) };
+  if ((kind || modelKind(normalizedModel)) === 'embedding') {
+    const response = await fetchImpl(ep.embeddings, { ...common, body: JSON.stringify({ model: normalizedModel, input: 'Reply only OK' }) });
+    if (response.ok) { await discardBody(response); return { protocol: 'embeddings', ok: true, endpoint: ep.embeddings, status: response.status, endpointExists: true }; }
+    const text = await readTextLimited(response, MAX_PROVIDER_ERROR_BYTES, 'provider embeddings error');
+    return { protocol: 'embeddings', ok: false, endpoint: ep.embeddings, status: response.status, error: trimError(text), endpointExists: !unsupportedEndpoint(response.status, text) };
+  }
   const responsesBody = { model: normalizedModel, input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Reply only OK' }] }], max_output_tokens: 1, stream: true };
   const rr = await fetchImpl(ep.responses, { ...common, body: JSON.stringify(responsesBody) });
   if (rr.ok) { await discardBody(rr); return { protocol: 'responses', ok: true, endpoint: ep.responses, status: rr.status }; }
