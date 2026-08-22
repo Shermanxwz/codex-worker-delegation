@@ -1,4 +1,16 @@
-# Security model
+# Security model / 安全模型
+
+## 中文概览
+
+项目把官方 ChatGPT 登录、New API 密钥、Web 密码和 Worker 执行权限分成不同边界：不修改或复制 auth.json；New API key 只进入本地 AES-256-GCM vault；Codex 只拿到本地 gateway token；Web 默认只监听 loopback；Worker / Verifier 通过真实 task ID 和 provider-isolated App Server thread 执行。
+
+Web 密码只保护本地控制平面，退出 Web session 不会退出 ChatGPT。MAIN 是服务端强制锁；Worker 任务的取消和续期属于主控 fallback，Web 页面只能查看状态。准备接入公网时仍必须使用 HTTPS reverse proxy、host firewall、限流和独立部署隔离。
+
+## English overview
+
+The project separates official ChatGPT authentication, the New API key, the Web password, and Worker execution authority. It never edits or copies auth.json; the New API key stays in an AES-256-GCM vault; Codex receives only a local gateway token; the Web service binds to loopback by default; and Worker / Verifier execution is tracked through real task IDs and provider-isolated App Server threads.
+
+The Web password protects only the local control plane, so logging out of the Web session does not log ChatGPT out. MAIN is enforced at the server boundary. Worker cancellation and renewal are root-control fallbacks, while the Web page remains observational. A public deployment still requires an HTTPS reverse proxy, host firewall, rate limiting, and independent service isolation.
 
 ## Credential separation
 
