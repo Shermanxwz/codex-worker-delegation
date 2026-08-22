@@ -5,6 +5,8 @@ import { spawn, spawnSync } from 'node:child_process';
 
 const DEFAULT_TIMEOUT_MS = 15000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 2000;
+const DEFAULT_POOL_IDLE_MS = 5 * 60 * 1000;
+const STARTUP_RETRY_DELAY_MS = 200;
 const MAX_MODEL_PAGES = 100;
 const MAX_STDOUT_BUFFER_BYTES = 4 * 1024 * 1024;
 const REASONING_EFFORTS = new Set(['auto', 'none', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
@@ -24,6 +26,21 @@ function jsonText(value, maxLength = 8000) {
   if (value === undefined) return '';
   let text; try { text = typeof value === 'string' ? value : JSON.stringify(value); } catch { text = String(value); }
   return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
+}
+
+function isRetryableConfigStartup(error) {
+  if (error?.code !== 'CODEX_APP_SERVER_EXITED') return false;
+  const text = `${error?.message || ''}\n${error?.stderr || ''}`;
+  return /error loading default config|config error|no such file or directory/i.test(text);
+}
+
+function startupDiagnostics(env, binary) {
+  const home = env.HOME || os.homedir();
+  const codexHome = env.CODEX_HOME || path.join(home, '.codex');
+  const configFile = path.join(codexHome, 'config.toml');
+  let config = 'missing';
+  try { const stat = fs.statSync(configFile); config = `present mode=${(stat.mode & 0o777).toString(8)} size=${stat.size}`; } catch (error) { config = `missing (${error.code || error.message})`; }
+  return `binary=${binary} CODEX_HOME=${codexHome} config.toml=${config}`;
 }
 
 export class CodexAppServerError extends Error {
@@ -58,6 +75,22 @@ export class CodexAppServerClient {
 
   async start() {
     if (this.process) return this;
+    let lastError;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try { return await this.#startOnce(); }
+      catch (error) {
+        lastError = error;
+        if (attempt === 0 && isRetryableConfigStartup(error)) { await new Promise((resolve) => setTimeout(resolve, STARTUP_RETRY_DELAY_MS)); continue; }
+        if (isRetryableConfigStartup(error)) error.message = `${error.message}; startup diagnostics: ${startupDiagnostics(this.env, this.binary)}; config-startup-retries=1`;
+        throw error;
+      }
+    }
+    throw lastError;
+  }
+
+  async #startOnce() {
+    if (this.process) return this;
+    this.stderr = ''; this.buffer = '';
     const child = spawn(this.binary, ['app-server', '--stdio'], { env: this.env, stdio: ['pipe', 'pipe', 'pipe'] });
     this.process = child;
     child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
@@ -77,8 +110,13 @@ export class CodexAppServerClient {
       const error = new Error(`codex app-server exited with code ${code ?? 'null'}${signal ? ` (${signal})` : ''}: ${this.stderr.trim()}`);
       error.code = 'CODEX_APP_SERVER_EXITED'; error.signal = signal || null; this.#failAll(error);
     });
-    await this.request('initialize', { clientInfo: { name: 'codex_worker_delegation', title: 'Codex Worker Delegation', version: '3.0.0' }, capabilities: { experimentalApi: true } });
-    this.notify('initialized', {}); return this;
+    try {
+      await this.request('initialize', { clientInfo: { name: 'codex_worker_delegation', title: 'Codex Worker Delegation', version: '3.0.0' }, capabilities: { experimentalApi: true } });
+      this.notify('initialized', {}); return this;
+    } catch (error) {
+      await this.#terminate(error).catch(() => {});
+      throw error;
+    }
   }
 
   async close() { await this.#terminate(new Error('codex app-server closed')); }
@@ -210,18 +248,60 @@ export class CodexAppServerClient {
   }
 }
 
+async function runWithOverallDeadline(operation, totalTimeoutMs, label, deadlineAt = 0) {
+  const total = Number(totalTimeoutMs); const deadline = Number.isFinite(Number(deadlineAt)) && Number(deadlineAt) > 0 ? Number(deadlineAt) : Number.isFinite(total) && total > 0 ? Date.now() + total : 0;
+  if (!deadline) return operation();
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) { const error = new Error(`Codex App Server ${label} exceeded the overall ${total}ms deadline`); error.code = 'CODEX_APP_SERVER_OVERALL_TIMEOUT'; error.timeoutMs = total; error.phase = label; throw error; }
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => { if (settled) return; settled = true; const error = new Error(`Codex App Server ${label} exceeded the overall ${total}ms deadline`); error.code = 'CODEX_APP_SERVER_OVERALL_TIMEOUT'; error.timeoutMs = total; error.phase = label; reject(error); }, remaining);
+    Promise.resolve().then(operation).then((value) => { if (settled) return; settled = true; clearTimeout(timer); resolve(value); }, (error) => { if (settled) return; settled = true; clearTimeout(timer); reject(error); });
+  });
+}
+
+export class CodexAppServerPool {
+  constructor({ idleMs = DEFAULT_POOL_IDLE_MS } = {}) { this.idleMs = Math.max(1000, Number(idleMs) || DEFAULT_POOL_IDLE_MS); this.entries = new Map(); this.closing = false; }
+
+  #key(options = {}) {
+    const env = options.env || process.env;
+    return JSON.stringify([options.binary || resolveCodexBinary(env), env.HOME || '', env.CODEX_HOME || '', env.CWD_DATA_DIR || '']);
+  }
+
+  async #get(options = {}, { totalTimeoutMs = 0, deadlineAt = 0 } = {}) {
+    const key = this.#key(options); let entry = this.entries.get(key);
+    if (entry?.starting) await runWithOverallDeadline(() => entry.starting, totalTimeoutMs, 'startup', deadlineAt);
+    if (entry?.client?.process) { if (entry.idleTimer) clearTimeout(entry.idleTimer); entry.idleTimer = null; return entry; }
+    const client = new CodexAppServerClient(options); entry = { key, client, starting: null, active: 0, idleTimer: null };
+    entry.starting = client.start(); this.entries.set(key, entry);
+    try { await runWithOverallDeadline(() => entry.starting, totalTimeoutMs, 'startup', deadlineAt); entry.starting = null; return entry; }
+    catch (error) { this.entries.delete(key); await client.close().catch(() => {}); throw error; }
+  }
+
+  async run(fn, options = {}) {
+    if (this.closing) throw new Error('Codex App Server pool is shutting down');
+    const { overallTimeoutMs = 0, ...clientOptions } = options; const total = Number(overallTimeoutMs); const deadlineAt = Number.isFinite(total) && total > 0 ? Date.now() + total : 0; const entry = await this.#get(clientOptions, { totalTimeoutMs: total, deadlineAt }); entry.active += 1;
+    let timedOut = false;
+    try { return await runWithOverallDeadline(() => fn(entry.client), total, 'operation', deadlineAt); }
+    catch (error) { timedOut = error?.code === 'CODEX_APP_SERVER_OVERALL_TIMEOUT'; if (!entry.client.process) this.entries.delete(entry.key); throw error; }
+    finally { entry.active -= 1; if (timedOut) await entry.client.abort('Codex App Server overall timeout').catch(() => {}); if (entry.active === 0 && this.entries.get(entry.key) === entry && !this.closing) { entry.idleTimer = setTimeout(() => { if (entry.active !== 0 || this.entries.get(entry.key) !== entry) return; this.entries.delete(entry.key); void entry.client.close().catch(() => {}); }, this.idleMs); entry.idleTimer.unref?.(); } }
+  }
+
+  async close() {
+    if (this.closing) return;
+    this.closing = true; const entries = [...this.entries.values()]; this.entries.clear();
+    for (const entry of entries) { if (entry.idleTimer) clearTimeout(entry.idleTimer); }
+    await Promise.all(entries.map((entry) => entry.client.close().catch(() => {})));
+  }
+
+  async reset() { await this.close(); this.closing = false; }
+}
+
 export async function withCodexAppServer(fn, options = {}) {
-  const { overallTimeoutMs = 0, ...clientOptions } = options; const client = new CodexAppServerClient(clientOptions); let timedOut = false;
-  const total = Number(overallTimeoutMs); const deadlineAt = Number.isFinite(total) && total > 0 ? Date.now() + total : 0;
-  const runWithDeadline = async (operation, label) => {
-    if (!deadlineAt) return operation;
-    const remaining = deadlineAt - Date.now();
-    if (remaining <= 0) { const error = new Error(`Codex App Server ${label} exceeded the overall ${total}ms deadline`); error.code='CODEX_APP_SERVER_OVERALL_TIMEOUT'; error.timeoutMs=total; error.phase=label; timedOut=true; throw error; }
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { timedOut = true; const error = new Error(`Codex App Server ${label} exceeded the overall ${total}ms deadline`); error.code = 'CODEX_APP_SERVER_OVERALL_TIMEOUT'; error.timeoutMs = total; error.phase = label; reject(error); }, remaining);
-      Promise.resolve(operation).then((value) => { clearTimeout(timer); resolve(value); }, (error) => { clearTimeout(timer); reject(error); });
-    });
-  };
-  try { await runWithDeadline(client.start(), 'startup'); return await runWithDeadline(Promise.resolve().then(() => fn(client)), 'operation'); }
+  const { pool, overallTimeoutMs = 0, ...clientOptions } = options;
+  if (pool) return pool.run(fn, { ...clientOptions, overallTimeoutMs });
+  const client = new CodexAppServerClient(clientOptions); let timedOut = false; const total = Number(overallTimeoutMs); const deadlineAt = Number.isFinite(total) && total > 0 ? Date.now() + total : 0;
+  try { await runWithOverallDeadline(() => client.start(), total, 'startup', deadlineAt); return await runWithOverallDeadline(() => fn(client), total, 'operation', deadlineAt); }
+  catch (error) { timedOut = error?.code === 'CODEX_APP_SERVER_OVERALL_TIMEOUT'; throw error; }
   finally { if (timedOut) await client.abort('Codex App Server overall timeout'); else await client.close(); }
 }
