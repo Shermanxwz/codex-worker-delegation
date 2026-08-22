@@ -1,5 +1,6 @@
 const DESKTOP_VISIBILITY_CHECK = 'official Codex model picker includes discovered New API-only models';
 const DESKTOP_PROVIDER_BINDING_CHECK = 'official Codex Desktop proves provider binding for discovered New API-only models';
+const CATALOG_CONNECTIVITY_CHECK = 'all discovered New API models pass their declared protocol connectivity check';
 
 export const REQUIRED_CORE_CHECKS = Object.freeze([
   'official Codex runtime',
@@ -27,7 +28,7 @@ export const REQUIRED_CORE_CHECKS = Object.freeze([
 
 export const SEAL_CLASSIFICATIONS = Object.freeze({
   UPSTREAM_DESKTOP: new Set([DESKTOP_VISIBILITY_CHECK, DESKTOP_PROVIDER_BINDING_CHECK]),
-  CATALOG_ADVISORY: new Set(['all discovered New API models are Codex-routeable'])
+  CATALOG_ADVISORY: new Set(['all discovered New API models are Codex-routeable', CATALOG_CONNECTIVITY_CHECK])
 });
 
 function missingCheck(name, category) {
