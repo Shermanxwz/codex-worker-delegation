@@ -70,7 +70,7 @@ export function resolveCodexBinary(env = process.env) {
 export class CodexAppServerClient {
   constructor({ env = process.env, binary = resolveCodexBinary(env), timeoutMs = DEFAULT_TIMEOUT_MS, shutdownTimeoutMs = DEFAULT_SHUTDOWN_TIMEOUT_MS } = {}) {
     this.env = env; this.binary = binary; this.timeoutMs = timeoutMs; this.shutdownTimeoutMs = Math.max(100, Number(shutdownTimeoutMs) || DEFAULT_SHUTDOWN_TIMEOUT_MS);
-    this.nextId = 1; this.pending = new Map(); this.notificationWaiters = []; this.pendingTurnExtensionMs = 0; this.notificationListeners = new Set(); this.stderr = ''; this.buffer = ''; this.process = null;
+    this.nextId = 1; this.pending = new Map(); this.notificationWaiters = []; this.pendingTurnExtensionMs = 0; this.turnStartsPending = 0; this.notificationListeners = new Set(); this.stderr = ''; this.buffer = ''; this.process = null;
   }
 
   async start() {
@@ -180,9 +180,12 @@ export class CodexAppServerClient {
   extendTurnTimeout(extraMs) {
     const parsed = Number(extraMs); if (!Number.isFinite(parsed) || parsed < 1000) throw new Error('extraMs must be at least 1000 milliseconds');
     const added = Math.trunc(parsed); const waiters = this.notificationWaiters.filter((candidate) => candidate.method === 'turn/completed');
-    if (waiters.length > 1) { const error = new Error('turn timeout extension is ambiguous across concurrent turns'); error.code = 'CODEX_TURN_EXTENSION_AMBIGUOUS'; throw error; }
+    if (waiters.length > 1 || (!waiters.length && this.turnStartsPending > 1)) { const error = new Error('turn timeout extension is ambiguous across concurrent turns'); error.code = 'CODEX_TURN_EXTENSION_AMBIGUOUS'; throw error; }
     const waiter = waiters[0];
-    if (!waiter) { this.pendingTurnExtensionMs += added; return { extraMs: added, pending: true, deadlineAt: null }; }
+    if (!waiter) {
+      if (this.turnStartsPending !== 1) { const error = new Error('turn timeout extension is unavailable without an active or starting turn'); error.code = 'CODEX_TURN_EXTENSION_UNAVAILABLE'; throw error; }
+      this.pendingTurnExtensionMs += added; return { extraMs: added, pending: true, deadlineAt: null };
+    }
     waiter.deadlineAt = Math.max(Date.now(), waiter.deadlineAt) + added; this.#armNotificationWaiter(waiter);
     return { extraMs: added, pending: false, deadlineAt: new Date(waiter.deadlineAt).toISOString() };
   }
@@ -203,8 +206,15 @@ export class CodexAppServerClient {
 
   async runThread({ model, modelProvider, prompt, cwd = process.cwd(), sandbox = 'workspace-write', developerInstructions, effort = 'auto', timeoutMs = 180000, onProgress }) {
     if (!model) throw new Error('model is required'); if (!modelProvider) throw new Error('modelProvider is required'); if (!prompt?.trim()) throw new Error('prompt is required'); if (!REASONING_EFFORTS.has(effort)) throw new Error(`unsupported reasoning effort: ${effort}`);
-    const started = await this.request('thread/start', { model, modelProvider, cwd, sandbox: normalizeSandboxMode(sandbox), approvalPolicy: 'never', ephemeral: true, serviceName: 'codex-worker-delegation', ...(developerInstructions ? { developerInstructions } : {}) });
-    const threadId = started?.thread?.id; if (!threadId) throw new Error(`thread/start did not return a thread id: ${JSON.stringify(started)}`);
+    this.turnStartsPending += 1;
+    let started;
+    try {
+      started = await this.request('thread/start', { model, modelProvider, cwd, sandbox: normalizeSandboxMode(sandbox), approvalPolicy: 'never', ephemeral: true, serviceName: 'codex-worker-delegation', ...(developerInstructions ? { developerInstructions } : {}) });
+    } catch (error) {
+      if (this.turnStartsPending <= 1) this.pendingTurnExtensionMs = 0;
+      throw error;
+    } finally { this.turnStartsPending = Math.max(0, this.turnStartsPending - 1); }
+    const threadId = started?.thread?.id; if (!threadId) { this.pendingTurnExtensionMs = 0; throw new Error(`thread/start did not return a thread id: ${JSON.stringify(started)}`); }
     const emit = (message) => { if (typeof onProgress !== 'function') return; try { Promise.resolve(onProgress(message)).catch(() => {}); } catch {} };
     const unsubscribe = this.subscribeNotifications((message) => { if (message?.params?.threadId === threadId) emit(message); });
     let completion = null;
