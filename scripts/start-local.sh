@@ -7,6 +7,7 @@ PID_FILE="$RUN_DIR/server.pid"
 LOG_FILE="$RUN_DIR/server.log"
 HOST="${CWD_HOST:-127.0.0.1}"
 PORT="${CWD_PORT:-8788}"
+REQUIRE_AUTH="${CWD_REQUIRE_AUTH:-1}"
 NODE_BIN="${CWD_NODE_BIN:-$(command -v node || true)}"
 if [[ -z "$NODE_BIN" ]]; then
   NODE_BIN="$(find /root/.cache/codex-runtimes -type f -path '*/dependencies/node/bin/node' -perm -u+x 2>/dev/null | sort | head -1 || true)"
@@ -32,7 +33,7 @@ if [[ -f "$PID_FILE" ]]; then
   rm -f "$PID_FILE"
 fi
 
-nohup env CWD_HOST="$HOST" CWD_PORT="$PORT" "$NODE_BIN" "$ROOT/src/server.mjs" >>"$LOG_FILE" 2>&1 < /dev/null &
+nohup env CWD_HOST="$HOST" CWD_PORT="$PORT" CWD_REQUIRE_AUTH="$REQUIRE_AUTH" "$NODE_BIN" "$ROOT/src/server.mjs" >>"$LOG_FILE" 2>&1 < /dev/null &
 server_pid=$!
 printf '%s\n' "$server_pid" >"$PID_FILE"
 
