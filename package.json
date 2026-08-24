@@ -6,7 +6,7 @@
   "description": "Codex Linux control plane for explicit official/third-party thread routing, coexistence checks, and per-model Responses compatibility bridging.",
   "engines": {"node": ">=20"},
   "scripts": {
-    "start": "node src/server.mjs",
+    "start": "CWD_REQUIRE_AUTH=${CWD_REQUIRE_AUTH:-1} node src/server.mjs",
     "start:local": "bash scripts/start-local.sh",
     "stop:local": "bash scripts/stop-local.sh",
     "test": "node --test --test-concurrency=1 --test-timeout=60000 test/*.test.mjs",
