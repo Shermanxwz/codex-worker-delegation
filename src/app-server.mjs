@@ -156,18 +156,32 @@ export class CodexAppServerClient {
     });
   }
 
-  waitForNotification(method, predicate = () => true, timeoutMs = 120000) {
-    return new Promise((resolve, reject) => {
+  #notificationWaiter(method, predicate = () => true, timeoutMs = 120000) {
+    let waiter;
+    const promise = new Promise((resolve, reject) => {
       const extensionMs = method === 'turn/completed' ? this.pendingTurnExtensionMs : 0;
       if (method === 'turn/completed') this.pendingTurnExtensionMs = 0;
-      const waiter = { method, predicate, resolve, reject, timer: null, deadlineAt: Date.now() + timeoutMs + extensionMs, baseTimeoutMs: timeoutMs };
+      waiter = { method, predicate, resolve, reject, timer: null, deadlineAt: Date.now() + timeoutMs + extensionMs, baseTimeoutMs: timeoutMs };
       this.#armNotificationWaiter(waiter); this.notificationWaiters.push(waiter);
     });
+    const cancel = () => {
+      if (!waiter) return;
+      clearTimeout(waiter.timer);
+      this.notificationWaiters = this.notificationWaiters.filter((candidate) => candidate !== waiter);
+      waiter = null;
+    };
+    return { promise, cancel };
+  }
+
+  waitForNotification(method, predicate = () => true, timeoutMs = 120000) {
+    return this.#notificationWaiter(method, predicate, timeoutMs).promise;
   }
 
   extendTurnTimeout(extraMs) {
     const parsed = Number(extraMs); if (!Number.isFinite(parsed) || parsed < 1000) throw new Error('extraMs must be at least 1000 milliseconds');
-    const added = Math.trunc(parsed); const waiter = this.notificationWaiters.find((candidate) => candidate.method === 'turn/completed');
+    const added = Math.trunc(parsed); const waiters = this.notificationWaiters.filter((candidate) => candidate.method === 'turn/completed');
+    if (waiters.length > 1) { const error = new Error('turn timeout extension is ambiguous across concurrent turns'); error.code = 'CODEX_TURN_EXTENSION_AMBIGUOUS'; throw error; }
+    const waiter = waiters[0];
     if (!waiter) { this.pendingTurnExtensionMs += added; return { extraMs: added, pending: true, deadlineAt: null }; }
     waiter.deadlineAt = Math.max(Date.now(), waiter.deadlineAt) + added; this.#armNotificationWaiter(waiter);
     return { extraMs: added, pending: false, deadlineAt: new Date(waiter.deadlineAt).toISOString() };
@@ -193,14 +207,20 @@ export class CodexAppServerClient {
     const threadId = started?.thread?.id; if (!threadId) throw new Error(`thread/start did not return a thread id: ${JSON.stringify(started)}`);
     const emit = (message) => { if (typeof onProgress !== 'function') return; try { Promise.resolve(onProgress(message)).catch(() => {}); } catch {} };
     const unsubscribe = this.subscribeNotifications((message) => { if (message?.params?.threadId === threadId) emit(message); });
+    let completion = null;
     try {
       emit({ method: 'thread/started', params: { threadId, model, modelProvider } });
-      const completion = this.waitForNotification('turn/completed', (params) => params?.threadId === threadId, timeoutMs);
-      const turnStarted = await this.request('turn/start', { threadId, input: [{ type: 'text', text: String(prompt), text_elements: [] }], ...(effort !== 'auto' ? { effort } : {}) });
+      completion = this.#notificationWaiter('turn/completed', (params) => params?.threadId === threadId, timeoutMs);
+      let turnStarted;
+      try {
+        turnStarted = await this.request('turn/start', { threadId, input: [{ type: 'text', text: String(prompt), text_elements: [] }], ...(effort !== 'auto' ? { effort } : {}) });
+      } catch (error) {
+        completion.cancel(); completion = null; throw error;
+      }
       emit({ method: 'turn/started', params: { threadId, turn: turnStarted?.turn || null } });
-      const params = await completion; const items = params?.turn?.items || []; const messages = items.filter((item) => item?.type === 'agentMessage' && typeof item.text === 'string').map((item) => item.text);
+      const params = await completion.promise; const items = params?.turn?.items || []; const messages = items.filter((item) => item?.type === 'agentMessage' && typeof item.text === 'string').map((item) => item.text);
       return { threadId, model: started?.model || model, modelProvider: started?.modelProvider || modelProvider, effort, status: params?.turn?.status || 'completed', output: messages.at(-1) || '', messages, turn: params?.turn || null };
-    } finally { unsubscribe(); }
+    } finally { completion?.cancel(); unsubscribe(); }
   }
 
   #protocolFailure(message, code = 'CODEX_APP_SERVER_PROTOCOL_ERROR') {
@@ -261,35 +281,50 @@ async function runWithOverallDeadline(operation, totalTimeoutMs, label, deadline
 }
 
 export class CodexAppServerPool {
-  constructor({ idleMs = DEFAULT_POOL_IDLE_MS } = {}) { this.idleMs = Math.max(1000, Number(idleMs) || DEFAULT_POOL_IDLE_MS); this.entries = new Map(); this.closing = false; }
+  constructor({ idleMs = DEFAULT_POOL_IDLE_MS } = {}) { this.idleMs = Math.max(1000, Number(idleMs) || DEFAULT_POOL_IDLE_MS); this.entries = new Map(); this.transientEntries = new Set(); this.closing = false; }
 
   #key(options = {}) {
     const env = options.env || process.env;
     return JSON.stringify([options.binary || resolveCodexBinary(env), env.HOME || '', env.CODEX_HOME || '', env.CWD_DATA_DIR || '']);
   }
 
-  async #get(options = {}, { totalTimeoutMs = 0, deadlineAt = 0 } = {}) {
+  async #acquire(options = {}, { totalTimeoutMs = 0, deadlineAt = 0 } = {}) {
     const key = this.#key(options); let entry = this.entries.get(key);
     if (entry?.starting) await runWithOverallDeadline(() => entry.starting, totalTimeoutMs, 'startup', deadlineAt);
-    if (entry?.client?.process) { if (entry.idleTimer) clearTimeout(entry.idleTimer); entry.idleTimer = null; return entry; }
-    const client = new CodexAppServerClient(options); entry = { key, client, starting: null, active: 0, idleTimer: null };
+    if (entry?.client?.process && entry.active === 0) {
+      if (entry.idleTimer) clearTimeout(entry.idleTimer); entry.idleTimer = null; entry.active = 1; return entry;
+    }
+    if (entry?.client?.process && entry.active > 0) {
+      const client = new CodexAppServerClient(options); const transient = { key, client, starting: client.start(), active: 1, idleTimer: null, transient: true };
+      this.transientEntries.add(transient);
+      try { await runWithOverallDeadline(() => transient.starting, totalTimeoutMs, 'startup', deadlineAt); transient.starting = null; return transient; }
+      catch (error) { this.transientEntries.delete(transient); await client.close().catch(() => {}); throw error; }
+    }
+    const client = new CodexAppServerClient(options); entry = { key, client, starting: null, active: 1, idleTimer: null, transient: false };
     entry.starting = client.start(); this.entries.set(key, entry);
     try { await runWithOverallDeadline(() => entry.starting, totalTimeoutMs, 'startup', deadlineAt); entry.starting = null; return entry; }
-    catch (error) { this.entries.delete(key); await client.close().catch(() => {}); throw error; }
+    catch (error) { if (this.entries.get(key) === entry) this.entries.delete(key); await client.close().catch(() => {}); throw error; }
   }
 
   async run(fn, options = {}) {
     if (this.closing) throw new Error('Codex App Server pool is shutting down');
-    const { overallTimeoutMs = 0, ...clientOptions } = options; const total = Number(overallTimeoutMs); const deadlineAt = Number.isFinite(total) && total > 0 ? Date.now() + total : 0; const entry = await this.#get(clientOptions, { totalTimeoutMs: total, deadlineAt }); entry.active += 1;
+    const { overallTimeoutMs = 0, ...clientOptions } = options; const total = Number(overallTimeoutMs); const deadlineAt = Number.isFinite(total) && total > 0 ? Date.now() + total : 0; const entry = await this.#acquire(clientOptions, { totalTimeoutMs: total, deadlineAt });
     let timedOut = false;
     try { return await runWithOverallDeadline(() => fn(entry.client), total, 'operation', deadlineAt); }
-    catch (error) { timedOut = error?.code === 'CODEX_APP_SERVER_OVERALL_TIMEOUT'; if (!entry.client.process) this.entries.delete(entry.key); throw error; }
-    finally { entry.active -= 1; if (timedOut) await entry.client.abort('Codex App Server overall timeout').catch(() => {}); if (entry.active === 0 && this.entries.get(entry.key) === entry && !this.closing) { entry.idleTimer = setTimeout(() => { if (entry.active !== 0 || this.entries.get(entry.key) !== entry) return; this.entries.delete(entry.key); void entry.client.close().catch(() => {}); }, this.idleMs); entry.idleTimer.unref?.(); } }
+    catch (error) { timedOut = error?.code === 'CODEX_APP_SERVER_OVERALL_TIMEOUT'; if (!entry.client.process && !entry.transient && this.entries.get(entry.key) === entry) this.entries.delete(entry.key); throw error; }
+    finally {
+      entry.active = Math.max(0, entry.active - 1);
+      if (timedOut) await entry.client.abort('Codex App Server overall timeout').catch(() => {});
+      if (entry.transient) { this.transientEntries.delete(entry); await entry.client.close().catch(() => {}); }
+      else if (entry.active === 0 && this.entries.get(entry.key) === entry && !this.closing) {
+        entry.idleTimer = setTimeout(() => { if (entry.active !== 0 || this.entries.get(entry.key) !== entry) return; this.entries.delete(entry.key); void entry.client.close().catch(() => {}); }, this.idleMs); entry.idleTimer.unref?.();
+      }
+    }
   }
 
   async close() {
     if (this.closing) return;
-    this.closing = true; const entries = [...this.entries.values()]; this.entries.clear();
+    this.closing = true; const entries = [...this.entries.values(), ...this.transientEntries.values()]; this.entries.clear(); this.transientEntries.clear();
     for (const entry of entries) { if (entry.idleTimer) clearTimeout(entry.idleTimer); }
     await Promise.all(entries.map((entry) => entry.client.close().catch(() => {})));
   }
