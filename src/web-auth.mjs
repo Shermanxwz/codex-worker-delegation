@@ -15,6 +15,42 @@ function timingSafeEqualText(a, b) {
   return left.length === right.length && crypto.timingSafeEqual(left, right);
 }
 
+async function syncDirectory(directory) {
+  let handle;
+  try { handle = await fs.open(directory, 'r'); await handle.sync(); }
+  finally { if (handle) await handle.close().catch(() => {}); }
+}
+
+async function writeCredentialFile(file, text, overwrite) {
+  const directory = path.dirname(file);
+  await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+  if (!overwrite) {
+    let handle;
+    try {
+      handle = await fs.open(file, 'wx', 0o600);
+      await handle.writeFile(text);
+      await handle.sync();
+      await handle.close(); handle = null;
+      await syncDirectory(directory);
+      return;
+    } finally { if (handle) await handle.close().catch(() => {}); }
+  }
+  const tmp = `${file}.${process.pid}.${crypto.randomBytes(8).toString('hex')}.password.tmp`;
+  let handle;
+  try {
+    handle = await fs.open(tmp, 'wx', 0o600);
+    await handle.writeFile(text);
+    await handle.sync();
+    await handle.close(); handle = null;
+    await fs.rename(tmp, file);
+    await fs.chmod(file, 0o600).catch(() => {});
+    await syncDirectory(directory);
+  } finally {
+    if (handle) await handle.close().catch(() => {});
+    await fs.unlink(tmp).catch((error) => { if (error.code !== 'ENOENT') throw error; });
+  }
+}
+
 export function passwordError(password) {
   const value = String(password || '');
   if (value.length < MIN_PASSWORD_LENGTH) return `password must be at least ${MIN_PASSWORD_LENGTH} characters`;
@@ -52,13 +88,8 @@ export class WebAuth {
     if (!overwrite && await this.isConfigured()) throw new Error('web password is already configured');
     const salt = crypto.randomBytes(16);
     const hash = await scrypt(String(password), salt, 64, { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
-    await fs.mkdir(path.dirname(this.file), { recursive: true, mode: 0o700 });
     const payload = { version: 1, algorithm: 'scrypt', salt: salt.toString('base64url'), hash: hash.toString('base64url'), createdAt: new Date().toISOString() };
-    if (overwrite) {
-      const tmp = `${this.file}.${process.pid}.password.tmp`;
-      await fs.writeFile(tmp, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
-      await fs.rename(tmp, this.file);
-    } else await fs.writeFile(this.file, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+    await writeCredentialFile(this.file, `${JSON.stringify(payload, null, 2)}\n`, overwrite);
     await fs.chmod(this.file, 0o600).catch(() => {});
     // A password rotation is a credential-boundary change. Never allow an
     // already-issued browser session to outlive that boundary.
