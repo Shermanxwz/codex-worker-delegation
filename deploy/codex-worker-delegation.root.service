@@ -13,6 +13,7 @@ Environment=HOME=@@HOME@@
 Environment=CODEX_HOME=@@CODEX_HOME@@
 Environment=CWD_HOST=127.0.0.1
 Environment=CWD_PORT=8788
+Environment=CWD_REQUIRE_AUTH=1
 Environment=PATH=@@HOME@@/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=CWD_NODE_BIN=@@INSTALL_ROOT@@/runtime/node
 ExecStart=@@INSTALL_ROOT@@/current/scripts/service-entry.sh
