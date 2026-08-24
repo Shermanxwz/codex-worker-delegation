@@ -26,8 +26,17 @@ const userUnitPath='deploy/codex-worker-delegation.service';const rootUnitPath='
 const packageJson=JSON.parse(await fs.readFile('package.json','utf8'));if(!String(packageJson?.scripts?.start||'').includes('CWD_REQUIRE_AUTH=${CWD_REQUIRE_AUTH:-1}'))throw new Error('package.json: npm start must require Web authentication by default');
 const startLocal=await fs.readFile('scripts/start-local.sh','utf8');if(!startLocal.includes('REQUIRE_AUTH="${CWD_REQUIRE_AUTH:-1}"')||!startLocal.includes('CWD_REQUIRE_AUTH="$REQUIRE_AUTH"'))throw new Error('start-local.sh must require Web authentication by default');
 
+const workflow=await fs.readFile('.github/workflows/ci.yml','utf8');
+const pinnedActions=[
+  'actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09',
+  'actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444',
+  'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02'
+];
+for(const action of pinnedActions)if(!workflow.includes(action))throw new Error(`.github/workflows/ci.yml: missing pinned action ${action}`);
+if(/uses:\s+actions\/(?:checkout|setup-node|upload-artifact)@v\d+/i.test(workflow))throw new Error('.github/workflows/ci.yml: archive workflow actions must be pinned to immutable 40-hex commits');
+
 for(const lifecycleScript of ['scripts/install-linux.sh','scripts/install-service-unit.sh','scripts/systemd-lib.sh','scripts/rollback-linux.sh','scripts/uninstall-linux.sh','scripts/validate-deployment.sh','scripts/tree-digest.mjs','scripts/plugin-cachebuster.mjs']){const stat=await fs.stat(lifecycleScript);if(!stat.isFile())throw new Error(`${lifecycleScript}: lifecycle script is missing`)}
 const systemdLib=await fs.readFile('scripts/systemd-lib.sh','utf8');if(!systemdLib.includes('cwd_assert_safe_install_root'))throw new Error('systemd-lib.sh must guard destructive install-root paths');
 const uninstall=await fs.readFile('scripts/uninstall-linux.sh','utf8');if(!uninstall.includes('HAD_PROJECT_MARKER')||!uninstall.includes('CWD_PURGE_DATA'))throw new Error('uninstall-linux.sh must require a project marker before destructive purge');
-if(failed)process.exit(1);console.log('syntax, shell, Web JS, manifests, authenticated hook, auth-default launchers, MCP, dual-scope deployment, lifecycle integrity, cachebuster, and immutable baseline checks passed');
+if(failed)process.exit(1);console.log('syntax, shell, Web JS, manifests, authenticated hook, auth-default launchers, pinned CI actions, MCP, dual-scope deployment, lifecycle integrity, cachebuster, and immutable baseline checks passed');
 async function walk(dir){const out=[];for(const e of await fs.readdir(dir,{withFileTypes:true})){const p=path.join(dir,e.name);if(e.isDirectory())out.push(...await walk(p));else out.push(p)}return out}
