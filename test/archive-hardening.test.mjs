@@ -40,7 +40,7 @@ process.stdin.on('data',(chunk)=>{
 });
 `;
 
-test('turn/start failure removes the pre-registered completion waiter', async (t) => {
+test('turn/start failure removes the pre-registered completion waiter and stale extension authority', async (t) => {
   const script = await fakeCodex(t, `${lineProtocol}
 function handle(m){
   if(m.method==='initialize')out({id:m.id,result:{}});
@@ -55,8 +55,11 @@ setInterval(()=>{},1<<30);`);
     () => client.runThread({ model: 'third-a', modelProvider: 'codex_worker_gateway', prompt: 'work', timeoutMs: 100 }),
     (error) => error instanceof CodexAppServerError && error.code === -32001
   );
-  const extension = client.extendTurnTimeout(1000);
-  assert.equal(extension.pending, true, 'failed turn/start must not leave a hidden turn/completed waiter');
+  assert.throws(
+    () => client.extendTurnTimeout(1000),
+    (error) => error.code === 'CODEX_TURN_EXTENSION_UNAVAILABLE',
+    'failed turn/start must leave neither a completion waiter nor extension authority for a future turn'
+  );
 });
 
 test('an active pooled App Server is never shared and one operation timeout cannot kill another', async (t) => {
