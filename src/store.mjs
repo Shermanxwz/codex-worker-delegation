@@ -76,7 +76,7 @@ function pidAlive(pid) {
   catch (error) { return error.code !== 'ESRCH'; }
 }
 
-async function acquireFileLock(targetFile) {
+export async function acquireFileLock(targetFile) {
   const directory = path.dirname(targetFile);
   const lockFile = `${targetFile}.lock`;
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
@@ -134,7 +134,7 @@ async function acquireFileLock(targetFile) {
       throw error;
     }
     if ((Date.now() - startedAt) >= STATE_LOCK_TIMEOUT_MS) {
-      const timeout = new Error(`Timed out acquiring state lock ${lockFile}`);
+      const timeout = new Error(`Timed out acquiring file lock ${lockFile}`);
       timeout.code = 'STATE_LOCK_TIMEOUT';
       throw timeout;
     }
@@ -214,15 +214,22 @@ export class StateStore {
   }
   async #appendAudit(line) {
     const file = auditPath(this.env); await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-    const currentSize = await fs.stat(file).then((stat) => stat.size).catch((error) => error.code === 'ENOENT' ? 0 : (() => { throw error; })());
-    if (currentSize + Buffer.byteLength(line, 'utf8') > this.auditMaxBytes) {
-      for (let index = this.auditMaxFiles - 1; index >= 1; index -= 1) {
-        const source = `${file}.${index}`; const target = `${file}.${index + 1}`;
-        await fs.rename(source, target).catch((error) => { if (error.code !== 'ENOENT') throw error; });
+    const release = await acquireFileLock(file);
+    try {
+      const currentSize = await fs.stat(file).then((stat) => stat.size).catch((error) => error.code === 'ENOENT' ? 0 : (() => { throw error; })());
+      if (currentSize + Buffer.byteLength(line, 'utf8') > this.auditMaxBytes) {
+        for (let index = this.auditMaxFiles - 1; index >= 1; index -= 1) {
+          const source = `${file}.${index}`; const target = `${file}.${index + 1}`;
+          await fs.rename(source, target).catch((error) => { if (error.code !== 'ENOENT') throw error; });
+        }
+        await fs.rename(file, `${file}.1`).catch((error) => { if (error.code !== 'ENOENT') throw error; });
       }
-      await fs.rename(file, `${file}.1`).catch((error) => { if (error.code !== 'ENOENT') throw error; });
-    }
-    await fs.appendFile(file, line, { mode: 0o600 }); await fs.chmod(file, 0o600).catch(() => {});
+      const handle = await fs.open(file, 'a', 0o600);
+      try { await handle.writeFile(line); await handle.sync(); }
+      finally { await handle.close(); }
+      await fs.chmod(file, 0o600).catch(() => {});
+      await syncDirectory(path.dirname(file));
+    } finally { await release(); }
   }
 }
 

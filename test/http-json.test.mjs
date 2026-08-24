@@ -6,7 +6,7 @@ import { readJson } from '../src/http-json.mjs';
 
 function request(body, headers = {}) {
   const stream = Readable.from(body === undefined ? [] : [Buffer.isBuffer(body) ? body : Buffer.from(body)]);
-  stream.headers = headers;
+  stream.headers = body === undefined ? headers : { 'content-type': 'application/json', ...headers };
   return stream;
 }
 
@@ -37,10 +37,12 @@ test('readJson rejects a small gzip body that expands beyond the decompressed li
   await expectHttpError(readJson(request(compressed, { 'content-encoding': 'gzip' }), 256), 413, 'REQUEST_TOO_LARGE');
 });
 
-test('readJson maps invalid compression, unsupported encoding, and invalid JSON to explicit client errors', async () => {
+test('readJson maps invalid compression, unsupported encoding, media type, and invalid JSON to explicit client errors', async () => {
   await expectHttpError(readJson(request('not-gzip', { 'content-encoding': 'gzip' })), 400, 'INVALID_COMPRESSION');
   await expectHttpError(readJson(request('{}', { 'content-encoding': 'deflate' })), 415, 'UNSUPPORTED_CONTENT_ENCODING');
+  await expectHttpError(readJson(request('{}', { 'content-type': 'text/plain' })), 415, 'UNSUPPORTED_MEDIA_TYPE');
   await expectHttpError(readJson(request('{broken')), 400, 'INVALID_JSON');
+  assert.deepEqual(await readJson(request('{"ok":true}', { 'content-type': 'application/problem+json; charset=utf-8' })), { ok: true });
 });
 
 test('readJson supports zstd when the active Node runtime provides it', async (t) => {

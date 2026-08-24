@@ -16,6 +16,11 @@ function decompressionError(error, encoding, limit) {
   return httpError(`invalid ${encoding} request body`, 400, 'INVALID_COMPRESSION');
 }
 
+function isJsonContentType(value) {
+  const mediaType = String(value || '').split(';', 1)[0].trim().toLowerCase();
+  return mediaType === 'application/json' || (mediaType.startsWith('application/') && mediaType.endsWith('+json'));
+}
+
 export async function readJson(req, limit = DEFAULT_JSON_LIMIT) {
   const normalizedLimit = Number(limit);
   if (!Number.isSafeInteger(normalizedLimit) || normalizedLimit < 1) throw new TypeError('JSON body limit must be a positive safe integer');
@@ -30,6 +35,7 @@ export async function readJson(req, limit = DEFAULT_JSON_LIMIT) {
     chunks.push(Buffer.from(chunk));
   }
   if (!chunks.length) return {};
+  if (!isJsonContentType(req.headers?.['content-type'])) throw httpError('request body must use application/json', 415, 'UNSUPPORTED_MEDIA_TYPE');
 
   let body = Buffer.concat(chunks);
   const encoding = String(req.headers?.['content-encoding'] || '').toLowerCase().trim();
