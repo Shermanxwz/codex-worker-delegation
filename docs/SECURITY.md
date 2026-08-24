@@ -2,15 +2,15 @@
 
 ## 中文概览
 
-项目把官方 ChatGPT 登录、New API 密钥、Web 密码和 Worker 执行权限分成不同边界：不修改或复制 auth.json；New API key 只进入本地 AES-256-GCM vault；Codex 只拿到本地 gateway token；Web 默认只监听 loopback；Worker / Verifier 通过真实 task ID 和 provider-isolated App Server thread 执行。
+项目把官方 ChatGPT 登录、New API 密钥、Web 密码和 Worker 执行权限分成不同边界：不修改或复制 auth.json；New API key 只进入本地 AES-256-GCM vault；Codex 只拿到本地 gateway token；Web 默认只监听 loopback，生产与本地启动器默认要求 Web 认证；Worker / Verifier 通过真实 task ID 和 provider-isolated App Server thread 执行。
 
-Web 密码只保护本地控制平面，退出 Web session 不会退出 ChatGPT。MAIN 是服务端强制锁；Worker 任务的取消和续期属于主控 fallback，Web 页面只能查看状态。准备接入公网时仍必须使用 HTTPS reverse proxy、host firewall、限流和独立部署隔离。
+Web 密码只保护本地控制平面，退出 Web session 不会退出 ChatGPT。MAIN 是服务端强制锁；Worker 任务的取消和续期属于主控 fallback，Web 页面只能查看状态。JSON 请求体必须使用 `application/json` 或 `application/*+json`，避免浏览器把跨站 `text/plain` simple request 当成 localhost 管理调用。准备接入公网时仍必须使用 HTTPS reverse proxy、host firewall、限流和独立部署隔离。
 
 ## English overview
 
-The project separates official ChatGPT authentication, the New API key, the Web password, and Worker execution authority. It never edits or copies auth.json; the New API key stays in an AES-256-GCM vault; Codex receives only a local gateway token; the Web service binds to loopback by default; and Worker / Verifier execution is tracked through real task IDs and provider-isolated App Server threads.
+The project separates official ChatGPT authentication, the New API key, the Web password, and Worker execution authority. It never edits or copies auth.json; the New API key stays in an AES-256-GCM vault; Codex receives only a local gateway token; the Web service binds to loopback by default and production/local launchers require Web authentication by default; and Worker / Verifier execution is tracked through real task IDs and provider-isolated App Server threads.
 
-The Web password protects only the local control plane, so logging out of the Web session does not log ChatGPT out. MAIN is enforced at the server boundary. Worker cancellation and renewal are root-control fallbacks, while the Web page remains observational. A public deployment still requires an HTTPS reverse proxy, host firewall, rate limiting, and independent service isolation.
+The Web password protects only the local control plane, so logging out of the Web session does not log ChatGPT out. MAIN is enforced at the server boundary. Worker cancellation and renewal are root-control fallbacks, while the Web page remains observational. JSON request bodies must use `application/json` or `application/*+json`, preventing a browser cross-site `text/plain` simple request from being treated as a localhost management call. A public deployment still requires an HTTPS reverse proxy, host firewall, rate limiting, and independent service isolation.
 
 ## Credential separation
 
@@ -19,10 +19,13 @@ The Web password protects only the local control plane, so logging out of the We
 - The New API key is encrypted at rest with AES-256-GCM using a separate random 32-byte local key stored mode `0600`.
 - Codex never needs the New API key. The namespaced `codex_worker_gateway` provider authenticates to the local gateway with a distinct random bearer token stored mode `0600` and resolved through command-backed provider auth.
 - Provider selection is per Codex execution thread. Switching a Worker from official to third-party does not require changing the ChatGPT login.
+- Web credential replacement uses collision-resistant temporary files, file fsync, atomic rename, directory fsync, and mode `0600`; password rotation invalidates all in-memory Web sessions.
 
 ## Network boundary
 
 - The control plane binds to `127.0.0.1` by default.
+- Installed systemd user/root units, `npm start`, and `npm run start:local` set `CWD_REQUIRE_AUTH=1` by default. An operator may explicitly override the developer launchers, but the sealed production units remain fail-closed.
+- Before a Web password exists, protected `/api/*` management routes remain unavailable when authentication is required. The loopback password-setup route accepts only a JSON request body; browser cross-site simple form/`text/plain` requests are rejected as unsupported media types.
 - The Web control plane stores only a salted scrypt password hash in the project data directory, uses short-lived HttpOnly SameSite sessions, throttles repeated login failures, and supports password rotation.
 - The Web password protects the local control plane only. `POST /api/auth/logout` clears the control-plane session cookie; it does not log out ChatGPT, touch OAuth state, or change Codex's official provider.
 - The plugin's cross-provider MCP tool calls a token-authenticated internal loopback endpoint.
@@ -40,8 +43,16 @@ The Web password protects only the local control plane, so logging out of the We
 - Cross-provider verifier threads are created with the Codex `read-only` sandbox. The hook also denies common execution/mutation tools for native `cwd-verifier` agents.
 - Worker task snapshots are stored under the private data directory with mode `0600`; they contain status, model/provider, progress, IDs, events, and redacted structured errors, not the original task prompt.
 - Worker and Verifier cancellation is scoped to the matching task ID: only the token-authenticated internal MCP route used by the root control plane marks the task `cancelled` and terminates that task's App Server. The Web UI is read-only for task control. Cancellation is idempotent and cannot be used to stop the main Codex process.
+- A warm App Server process is reused only while idle. Simultaneous Worker operations never share one App Server process, so one operation's cancellation/overall timeout cannot terminate another operation and one Worker's lease extension cannot attach to another Worker's turn. If a caller bypasses the pool and creates multiple simultaneous turns on one client, timeout extension fails closed with an ambiguity error instead of guessing a target.
+- A `turn/completed` waiter registered before `turn/start` is explicitly removed if `turn/start` fails, so a failed start cannot leave a later orphan timeout rejection behind.
 - Worker lease renewal is supervisor-controlled by default: at `reviewDue`, the control plane renews when the task has recent meaningful lifecycle progress and a healthy heartbeat, and may grant one bounded grace review to work that has entered real execution but temporarily emits only heartbeats. It never exceeds the profile's per-renewal or hard total runtime cap; repeated heartbeat-only, stalled, unavailable, or exhausted work is cancelled fail-closed. Each decision is persisted with evidence and reason. Root-control `worker_extend` remains a token-authenticated fallback; the Web UI cannot extend or cancel a task.
 - Use Codex permissions/sandboxing and operating-system isolation for untrusted commands, secrets, and filesystem boundaries.
+
+## Configuration and audit durability
+
+- Project-controlled `config.toml` mutations are serialized with the same owner-record file lock used for durable state. Immediately before replacement, the manager rereads `config.toml`; if it no longer equals the snapshot used to compute the mutation, the operation fails with `CODEX_CONFIG_CONCURRENT_MODIFICATION` instead of overwriting the newer configuration.
+- Configuration, ownership records, role files, state, vault key material, gateway tokens, Web credential data, and Worker terminal snapshots use atomic publication patterns appropriate to their ownership boundary.
+- Audit append/rotation is serialized across StateStore instances/processes, fsyncs the active audit file, and fsyncs the containing directory after rotation/append. An accidentally duplicated control-plane process therefore cannot race audit file rotation.
 
 ## Plugin trust
 
