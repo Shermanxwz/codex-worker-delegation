@@ -21,8 +21,8 @@ jobs:
         node: [20, 22, 24]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with: {node-version: "${{ matrix.node }}"}
       - run: npm run check
       - name: Deterministic bounded test suite
@@ -32,8 +32,8 @@ jobs:
     timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with: {node-version: "24"}
       - run: npm run check
       - name: Parallel process-isolation stress suite
@@ -43,8 +43,8 @@ jobs:
     timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with: {node-version: "22"}
       - run: npm run check
       - name: Install current official Codex package
@@ -64,8 +64,8 @@ jobs:
     timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with: {node-version: "22"}
       - name: Install current official Codex package
         run: npm install --no-save @openai/codex
@@ -98,6 +98,7 @@ jobs:
           ! grep -q '^User=' "$unit"
           grep -Fqx "Environment=HOME=$HOME" "$unit"
           grep -Fqx "Environment=CODEX_HOME=$CODEX_HOME" "$unit"
+          grep -Fqx "Environment=CWD_REQUIRE_AUTH=1" "$unit"
 
           CWD_PORT=8878 "$CWD_INSTALL_ROOT/current/scripts/service-entry.sh" >/tmp/cwd-service-entry.log 2>&1 &
           service_pid=$!
@@ -126,8 +127,8 @@ jobs:
     timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with: {node-version: "22"}
       - name: Install current official Codex package
         run: npm install --no-save @openai/codex
@@ -169,6 +170,7 @@ jobs:
               grep -Fxq "Group=root" "$unit"
               grep -Fxq "Environment=HOME=$HOME" "$unit"
               grep -Fxq "Environment=CODEX_HOME=$CODEX_HOME" "$unit"
+              grep -Fxq "Environment=CWD_REQUIRE_AUTH=1" "$unit"
 
               CWD_PORT=8879 "$CWD_INSTALL_ROOT/current/scripts/service-entry.sh" >/tmp/cwd-root-service-entry.log 2>&1 &
               service_pid=$!
@@ -198,8 +200,8 @@ jobs:
     timeout-minutes: 25
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with: {node-version: "22"}
       - name: Load immutable ChatGPT Linux baseline
         shell: bash
@@ -244,7 +246,7 @@ jobs:
         run: node scripts/real-codex-e2e.mjs | tee -a /tmp/chatgpt-baseline-evidence.txt
       - name: Upload immutable baseline evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: chatgpt-linux-baseline-evidence-${{ github.run_id }}
           path: /tmp/chatgpt-baseline-evidence.txt
@@ -255,8 +257,8 @@ jobs:
     timeout-minutes: 25
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with: {node-version: "22"}
       - name: Download current official ChatGPT Linux deb
         run: |
@@ -289,7 +291,7 @@ jobs:
           grep -F "CODEX_CLI_PATH" src/app-server.mjs
       - name: Upload latest compatibility evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: chatgpt-linux-latest-evidence-${{ github.run_id }}
           path: /tmp/chatgpt-latest-evidence.txt
