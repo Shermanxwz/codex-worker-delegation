@@ -105,10 +105,11 @@ setInterval(()=>{},1<<30);`);
   await client.start();
   const one = client.runThread({ model: 'third-a', modelProvider: 'codex_worker_gateway', prompt: 'one', timeoutMs: 5000 });
   const two = client.runThread({ model: 'third-b', modelProvider: 'codex_worker_gateway', prompt: 'two', timeoutMs: 5000 });
+  const settledPromise = Promise.allSettled([one, two]);
   await sleep(100);
   assert.throws(() => client.extendTurnTimeout(1000), (error) => error.code === 'CODEX_TURN_EXTENSION_AMBIGUOUS');
   await client.abort('test complete');
-  const settled = await Promise.allSettled([one, two]);
+  const settled = await settledPromise;
   assert.equal(settled.filter((item) => item.status === 'rejected').length, 2);
 });
 
