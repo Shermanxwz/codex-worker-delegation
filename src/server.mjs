@@ -145,7 +145,7 @@ export function createApp({ env = process.env, fetchImpl = fetch } = {}) {
         return sendJson(res, 200, { ok: true }, { 'set-cookie': webAuth.clearCookie() });
       }
       if (url.pathname.startsWith('/api/')) {
-        if (req.method === 'GET' && url.pathname === '/api/health') return sendJson(res, 200, { ok: true, version: '3.0.0', host, port, codexBinary: resolveCodexBinary(env), authRequired: await webAuth.isConfigured() || env.CWD_REQUIRE_AUTH === '1' || !isLoopback(host) });
+        if (req.method === 'GET' && url.pathname === '/api/health') return sendJson(res, 200, { ok: true, version: '3.1.0', host, port, codexBinary: resolveCodexBinary(env), authRequired: await webAuth.isConfigured() || env.CWD_REQUIRE_AUTH === '1' || !isLoopback(host) });
         if (!await authorizeUi(req, env, host, webAuth)) return sendJson(res, 401, { error: 'unauthorized' });
         if (req.method === 'GET' && url.pathname === '/api/state') return sendJson(res, 200, publicState(await store.read()));
         if (req.method === 'GET' && url.pathname === '/api/catalog') return sendJson(res, 200, await loadCatalog({ store, vault, env, fetchImpl, appServerPool }));
@@ -385,7 +385,7 @@ async function verifyCoexistence({ body, store, codex, env, appServerPool }) {
   await store.audit('coexistence.verified', { ok: result.ok, model, markerObserved, officialBefore, officialAfter, selectorStable }); return result;
 }
 
-function firstThirdPartyModel(state) { for (const mode of ['DELEGATE', 'AUTO', state.mode]) { const routes = activeRouting(state, mode); for (const roleName of ['worker', 'main', 'verifier']) if (routes[roleName]?.provider === 'third_party' && routes[roleName]?.model) return routes[roleName].model; } return ''; }
+function firstThirdPartyModel(state) { for (const mode of [...new Set([state.mode, 'DELEGATE', 'AUTO', 'MAIN'])]) { const routes = activeRouting(state, mode); for (const roleName of ['worker', 'verifier', 'main']) if (routes[roleName]?.provider === 'third_party' && routes[roleName]?.model) return routes[roleName].model; } return ''; }
 function routeEffortForModel(state, provider, model) { for (const routes of Object.values(state.routing || {})) for (const route of Object.values(routes || {})) if (route?.provider === provider && route.model === model && route.effort && route.effort !== 'auto') return route.effort; return 'auto'; }
 function summarizeAccount(result) { const a = result?.account || null; return a ? { type: a.type || null, planType: a.planType || null, email: a.email || null, requiresOpenaiAuth: result?.requiresOpenaiAuth ?? null } : { type: null, planType: null, email: null, requiresOpenaiAuth: result?.requiresOpenaiAuth ?? null }; }
 function publicSelectors(value = {}) { return Object.fromEntries(['model_provider','model'].filter((k)=>value[k]?.raw).map((k)=>[k,value[k].raw])); }

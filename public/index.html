@@ -77,8 +77,8 @@
         </section>
 
         <section class="page" data-page="routing" hidden>
-          <div class="page-heading"><div><p class="eyebrow">ROUTING</p><h1>模型路由</h1><p class="lead">只暴露真正有意义的选择：AUTO 一个模型，WORKER 两个模型，MAIN 一个模型。选择模式不会自动启动任务；真实委派发生时才会按这里的路由执行。每个模型都可以单独设定思考强度。</p></div><button id="saveRouting">保存路由</button></div>
-          <div class="card"><div class="modes"><button data-mode="AUTO">AUTO</button><button data-mode="DELEGATE">WORKER</button><button data-mode="MAIN">MAIN</button></div><p id="modeHelp" class="muted"></p><div id="routing"></div><div class="legend"><span><b>AUTO</b>：一个主模型，Worker / Verifier 继承主模型</span><span><b>WORKER</b>：Main 协调 + Worker 执行；真实任务才启动，观察点由服务端自动续期或终止</span><span><b>MAIN</b>：只运行主线程，服务端拒绝任何 Worker / Verifier 请求</span><span><b>Verifier</b>：Worker 路由的只读验证角色，调用时继承 Worker 的第三方模型与思考强度，不单独选模型</span><span><b>思考强度</b>：auto 不发送 effort；显式值用于新线程；官方 Main 显式值还会同步 Codex 默认强度，第三方只转发网页明确选择的值</span></div><pre id="routingResult" class="compact"></pre></div>
+          <div class="page-heading"><div><p class="eyebrow">ROUTING</p><h1>模型路由</h1><p class="lead">AUTO 与 WORKER 都可以分别指定 Main、Worker、Verifier 路由；区别只在于 AUTO 自动判断是否委派，而 WORKER 显式启用协作。MAIN 只运行主线程。每个模型都可以单独设定思考强度。</p></div><button id="saveRouting">保存路由</button></div>
+          <div class="card"><div class="modes"><button data-mode="AUTO">AUTO</button><button data-mode="DELEGATE">WORKER</button><button data-mode="MAIN">MAIN</button></div><p id="modeHelp" class="muted"></p><div id="routing"></div><div class="legend"><span><b>AUTO</b>：独立指定 Main / Worker / Verifier，是否委派由任务自动判断</span><span><b>WORKER</b>：独立指定 Main / Worker / Verifier，显式启用协作路由</span><span><b>MAIN</b>：只运行主线程，服务端拒绝任何 Worker / Verifier 请求</span><span><b>Verifier</b>：只读验证角色；默认可跟随 Worker，也可以单独指定更轻量模型</span><span><b>思考强度</b>：auto 不发送 effort；显式值用于新线程；官方 Main 显式值还会同步 Codex 默认强度，第三方只转发网页明确选择的值</span></div><pre id="routingResult" class="compact"></pre></div>
         </section>
 
         <section class="page" data-page="connectivity" hidden>

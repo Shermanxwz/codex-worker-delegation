@@ -25,7 +25,7 @@
 
 - MAIN 是锁定模式，不允许通过旧参数或 MCP 请求绕过。
 - WORKER 是 Web 对 DELEGATE 的显示名称；只有真实 delegation 或路由测试才会启动 Worker。
-- AUTO 和 MAIN 只显示 Main selector；WORKER 显示 Main + Worker，Verifier 继承 Worker。
+- AUTO 和 WORKER 显示 Main + Worker + Verifier 路由；AUTO 自动判断是否委派，WORKER 显式启用协作；MAIN 只显示 Main 并禁止委派。
 - 官方 → 官方可以使用 native subagent；任何涉及第三方 provider 的路由都使用显式 provider-isolated App Server thread。
 - 官方 Codex model/list 当前不提供足够的第三方 provider binding；项目不会伪造官方下拉框。
 - NOT_SEALED 是严格门槛结果，不等同于健康检查失败；每个失败项都必须保留真实证据。
@@ -51,7 +51,7 @@ This directory documents the architecture, security boundaries, production accep
 
 - MAIN is a hard lock; stale parameters and MCP requests cannot bypass it.
 - WORKER is the Web label for DELEGATE; a Worker starts only through real delegation or a route test.
-- AUTO and MAIN expose only the Main selector; WORKER exposes Main + Worker, while Verifier inherits Worker.
+- AUTO and WORKER expose Main + Worker + Verifier routes; AUTO decides whether to delegate, WORKER explicitly enables collaboration, and MAIN exposes only Main while prohibiting delegation.
 - Official → Official routes may use native subagents; every route involving a third-party provider uses an explicit provider-isolated App Server thread.
 - The current official Codex model/list surface does not provide enough third-party provider binding; the project does not fake the official picker.
 - NOT_SEALED is a strict gate result, not the same as a failed health check; every failed item must retain real evidence.

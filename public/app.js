@@ -1,11 +1,11 @@
 const $ = (id) => document.getElementById(id);
 const PAGES = ['dashboard', 'login', 'security', 'provider', 'routing', 'connectivity', 'integration'];
 const MODES = ['AUTO', 'DELEGATE', 'MAIN'];
-const VISIBLE_ROLES = { AUTO: ['main'], DELEGATE: ['main', 'worker'], MAIN: ['main'] };
+const VISIBLE_ROLES = { AUTO: ['main', 'worker', 'verifier'], DELEGATE: ['main', 'worker', 'verifier'], MAIN: ['main'] };
 const MODE_LABELS = { AUTO: 'AUTO', DELEGATE: 'WORKER', MAIN: 'MAIN' };
 const MODE_HELP = {
-  AUTO: '自动协调：只选择一个主模型，Worker 和 Verifier 继承该模型；是否实际委派由任务决定。',
-  DELEGATE: 'Worker 模式：Main 负责协调，Worker 负责执行；真实任务通过 delegate_worker 或路由测试启动。主控观察点由服务端自动处理：有实质进展就有界续期，失去进展或心跳就主动终止。Verifier 是只读验证角色，调用时继承 Worker 的模型与思考强度。',
+  AUTO: '自动协调：Main、Worker、Verifier 使用各自指定的路由；是否实际委派由任务决定。默认建议 Worker / Verifier 使用低成本模型。',
+  DELEGATE: 'Worker 模式：Main 负责协调，Worker 负责执行；Worker / Verifier 路由由用户明确指定，真实任务通过 delegate_worker 或路由测试启动。主控观察点由服务端自动处理：有实质进展就有界续期，失去进展或心跳就主动终止。Verifier 是只读验证角色。',
   MAIN: 'Main 模式：只运行主线程，禁用 Worker delegation。'
 };
 let state = null;
@@ -197,7 +197,7 @@ function renderStatus() {
 }
 
 function selectedThirdPartyModel() {
-  const candidates = [state?.routing?.DELEGATE?.worker, state?.routing?.AUTO?.main, state?.routing?.DELEGATE?.main, state?.routing?.MAIN?.main];
+  const candidates = [state?.routing?.AUTO?.worker, state?.routing?.AUTO?.verifier, state?.routing?.DELEGATE?.worker, state?.routing?.DELEGATE?.verifier, state?.routing?.AUTO?.main, state?.routing?.DELEGATE?.main, state?.routing?.MAIN?.main];
   return candidates.find((route) => route?.provider === 'third_party' && route.model)?.model || '';
 }
 
@@ -241,7 +241,7 @@ document.querySelectorAll('[data-page-link]').forEach((link) => link.addEventLis
 document.querySelectorAll('.modes [data-mode]').forEach((button) => button.onclick = async () => { try { await api('/api/mode', { method: 'PUT', body: JSON.stringify({ mode: button.dataset.mode }) }); coexistenceProof = null; await refresh({ catalogToo: false }); } catch (error) { $('routingResult').textContent = error.message; } });
 $('dashboardRefresh').onclick = () => refresh();
 $('saveProvider').onclick = async () => { try { await api('/api/provider', { method: 'PUT', body: JSON.stringify({ name: 'New API', baseUrl: $('baseUrl').value.trim(), apiKey: $('apiKey').value, protocol: $('protocol').value }) }); $('apiKey').value = ''; coexistenceProof = null; $('providerResult').textContent = 'New API 已保存，正在刷新模型目录…'; await refresh(); navigate('provider'); } catch (error) { $('providerResult').textContent = error.message; } };
-$('saveRouting').onclick = async () => { try { for (const mode of MODES) { const roles = {}; for (const role of VISIBLE_ROLES[mode]) roles[role] = { provider: findProvider(mode, role), model: findModel(mode, role), effort: findEffort(mode, role) }; await api('/api/routing', { method: 'PUT', body: JSON.stringify({ mode, roles }) }); } coexistenceProof = null; $('routingResult').textContent = '路由与思考强度已保存；显式强度会同步到 Codex turn/start，Verifier 按模式继承。'; await refresh({ catalogToo: false }); } catch (error) { $('routingResult').textContent = error.stack || error.message; } };
+ $('saveRouting').onclick = async () => { try { for (const mode of MODES) { const roles = {}; for (const role of VISIBLE_ROLES[mode]) roles[role] = { provider: findProvider(mode, role), model: findModel(mode, role), effort: findEffort(mode, role) }; await api('/api/routing', { method: 'PUT', body: JSON.stringify({ mode, roles }) }); } coexistenceProof = null; $('routingResult').textContent = '路由与思考强度已保存；AUTO 与 WORKER 的 Worker / Verifier 使用独立配置，未配置时 Verifier 默认跟随 Worker。'; await refresh({ catalogToo: false }); } catch (error) { $('routingResult').textContent = error.stack || error.message; } };
 $('probe').onclick = async () => { try { $('providerResult').textContent = '正在探测…'; const model = selectedThirdPartyModel() || catalog.thirdParty?.models?.[0]?.id || ''; $('providerResult').textContent = JSON.stringify(await api('/api/provider/probe', { method: 'POST', body: JSON.stringify({ model }) }), null, 2); await refresh({ catalogToo: false }); } catch (error) { $('providerResult').textContent = error.message; } };
 $('testAllModels').onclick = () => runConnectivity();
 $('install').onclick = async () => { try { $('integrationState').textContent = '正在安装 / 刷新 namespaced provider…'; await api('/api/codex/install', { method: 'POST' }); coexistenceProof = null; await refresh(); navigate('integration'); } catch (error) { $('integrationState').textContent = error.stack || error.message; } };

@@ -13,6 +13,8 @@ CODEX_HOME_DIR="${CODEX_HOME:-$HOME_DIR/.codex}"
 SYSTEMD_DIR="$(cwd_systemd_dir "$SCOPE")"
 SERVICE_FILE="$(cwd_service_file "$SCOPE")"
 NODE_BIN="${CWD_NODE_BIN:-$(command -v node || true)}"
+SERVICE_USER="${CWD_SYSTEMD_SERVICE_USER:-root}"
+SERVICE_GROUP="${CWD_SYSTEMD_SERVICE_GROUP:-$SERVICE_USER}"
 
 if [[ "$SCOPE" == 'system' && "$EUID" -ne 0 ]]; then
   echo "System-service deployment requires root. Run as root or set CWD_SYSTEMD_SCOPE=user." >&2
@@ -28,6 +30,17 @@ for item in "$INSTALL_ROOT" "$HOME_DIR" "$CODEX_HOME_DIR" "$SYSTEMD_DIR"; do
     exit 2
   fi
 done
+
+if [[ "$SCOPE" == 'system' ]]; then
+  if ! id -u "$SERVICE_USER" >/dev/null 2>&1 || ! id -g "$SERVICE_GROUP" >/dev/null 2>&1; then
+    echo "Configured system service identity does not exist: $SERVICE_USER:$SERVICE_GROUP" >&2
+    exit 2
+  fi
+  if [[ "$SERVICE_USER" =~ [[:space:]] || "$SERVICE_GROUP" =~ [[:space:]] ]]; then
+    echo "Configured system service identity contains whitespace: $SERVICE_USER:$SERVICE_GROUP" >&2
+    exit 2
+  fi
+fi
 
 if [[ "$SCOPE" == 'system' ]]; then
   TEMPLATE="$RELEASE_ROOT/deploy/codex-worker-delegation.root.service"
@@ -63,16 +76,18 @@ fi
 SERVICE_TMP="$SERVICE_FILE.$$.tmp"
 "$RUNTIME_NODE" -e '
 const fs=require("fs");
-const [template,out,installRoot,home,codexHome]=process.argv.slice(1);
+const [template,out,installRoot,home,codexHome,serviceUser,serviceGroup]=process.argv.slice(1);
 const escapeSystemd=(value)=>String(value).replaceAll("%","%%");
 let text=fs.readFileSync(template,"utf8");
 for (const [marker,value] of [["@@INSTALL_ROOT@@",installRoot],["@@HOME@@",home],["@@CODEX_HOME@@",codexHome]]) {
   text=text.replaceAll(marker,escapeSystemd(value));
 }
+if (text.includes("User=root") && serviceUser !== "root") text=text.replace("\nUser=root\n", `\nUser=${escapeSystemd(serviceUser)}\n`);
+if (text.includes("Group=root") && serviceGroup !== "root") text=text.replace("\nGroup=root\n", `\nGroup=${escapeSystemd(serviceGroup)}\n`);
 if (text.includes("@@")) throw new Error("unresolved systemd template marker");
 fs.writeFileSync(out,text,{mode:0o644});
 fs.chmodSync(out,0o644);
-' "$TEMPLATE" "$SERVICE_TMP" "$INSTALL_ROOT" "$HOME_DIR" "$CODEX_HOME_DIR"
+' "$TEMPLATE" "$SERVICE_TMP" "$INSTALL_ROOT" "$HOME_DIR" "$CODEX_HOME_DIR" "$SERVICE_USER" "$SERVICE_GROUP"
 mv -f "$SERVICE_TMP" "$SERVICE_FILE"
 chmod 644 "$SERVICE_FILE"
 cwd_write_systemd_scope "$INSTALL_ROOT" "$SCOPE"

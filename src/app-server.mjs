@@ -111,7 +111,7 @@ export class CodexAppServerClient {
       error.code = 'CODEX_APP_SERVER_EXITED'; error.signal = signal || null; this.#failAll(error);
     });
     try {
-      await this.request('initialize', { clientInfo: { name: 'codex_worker_delegation', title: 'Codex Worker Delegation', version: '3.0.0' }, capabilities: { experimentalApi: true } });
+      await this.request('initialize', { clientInfo: { name: 'codex_worker_delegation', title: 'Codex Worker Delegation', version: '3.1.0' }, capabilities: { experimentalApi: true } });
       this.notify('initialized', {}); return this;
     } catch (error) {
       await this.#terminate(error).catch(() => {});

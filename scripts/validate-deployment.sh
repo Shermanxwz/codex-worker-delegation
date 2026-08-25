@@ -26,7 +26,13 @@ if [[ -f "$SERVICE_FILE" ]]; then
   unit_has "Environment=CODEX_HOME=$ESCAPED_CODEX_HOME" && pass 'systemd CODEX_HOME matches target identity' || fail 'systemd CODEX_HOME matches target identity'
   if unit_has 'ProtectSystem=strict'; then fail 'systemd must not make delegated workspaces read-only with ProtectSystem=strict'; else pass 'systemd avoids workspace-breaking ProtectSystem=strict'; fi
   if grep -Eq '/root/Documents|codex-primary-runtime' "$SERVICE_FILE"; then fail 'unit contains no development-machine path'; else pass 'unit contains no development-machine path'; fi
-  if [[ "$SCOPE" == 'system' ]]; then unit_has 'User=root' && pass 'root system service explicitly runs as root' || fail 'root system service explicitly runs as root'; unit_has 'Group=root' && pass 'root system service explicitly runs as group root' || fail 'root system service explicitly runs as group root'; else if grep -Eq '^User=' "$SERVICE_FILE"; then fail 'user service must inherit the desktop Unix identity'; else pass 'user service inherits the desktop Unix identity'; fi; fi
+  if [[ "$SCOPE" == 'system' ]]; then
+    SERVICE_USER="$(sed -n 's/^User=//p' "$SERVICE_FILE" | head -1)"
+    SERVICE_GROUP="$(sed -n 's/^Group=//p' "$SERVICE_FILE" | head -1)"
+    [[ -n "$SERVICE_USER" && "$SERVICE_USER" != *[[:space:]]* && $(id -u "$SERVICE_USER" 2>/dev/null || printf '') != '' ]] && pass "system service runs as existing identity $SERVICE_USER" || fail 'system service runs as an existing identity'
+    [[ -n "$SERVICE_GROUP" && "$SERVICE_GROUP" != *[[:space:]]* && $(id -g "$SERVICE_GROUP" 2>/dev/null || printf '') != '' ]] && pass "system service uses existing group $SERVICE_GROUP" || fail 'system service uses an existing group'
+    if [[ -d "$HOME" && -n "$SERVICE_USER" ]]; then HOME_UID="$(stat -c '%u' "$HOME" 2>/dev/null || printf '')"; SERVICE_UID="$(id -u "$SERVICE_USER" 2>/dev/null || printf '')"; [[ -n "$HOME_UID" && "$HOME_UID" == "$SERVICE_UID" ]] && pass 'system service identity matches ChatGPT/Codex HOME owner' || fail 'system service identity matches ChatGPT/Codex HOME owner'; fi
+  else if grep -Eq '^User=' "$SERVICE_FILE"; then fail 'user service must inherit the desktop Unix identity'; else pass 'user service inherits the desktop Unix identity'; fi; fi
   if command -v systemd-analyze >/dev/null 2>&1; then systemd-analyze verify "$SERVICE_FILE" >/dev/null 2>&1 && pass 'systemd unit syntax verifies' || fail 'systemd unit syntax verifies'; fi
 fi
 
@@ -62,7 +68,7 @@ RECORD="$INSTALL_ROOT/install-record.json"
 if [[ -f "$RECORD" && -n "$NODE_BIN" ]]; then
   RECORD_MODE="$(stat -c '%a' "$RECORD")"; [[ "$RECORD_MODE" == '600' ]] && pass 'install record mode 0600' || fail "install record mode 0600 (found $RECORD_MODE)"
   field(){ "$NODE_BIN" -e 'const fs=require("fs");const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const v=j[process.argv[2]];process.stdout.write(v===undefined?"":String(v))' "$RECORD" "$1"; }
-  SCHEMA="$(field schemaVersion)"; EXPECTED_RELEASE="$(field releaseId)"; EXPECTED_SCOPE="$(field systemdScope)"; EXPECTED_SERVICE="$(field serviceFile)"; EXPECTED_ROOT="$(field installRoot)"; EXPECTED_UID="$(field uid)"; EXPECTED_NODE_SHA="$(field runtimeNodeSha256)"; EXPECTED_RELEASE_SHA="$(field releaseTreeSha256)"; EXPECTED_PLUGIN_VERSION="$(field pluginVersion)"; EXPECTED_PLUGIN_SHA="$(field pluginTreeSha256)"; EXPECTED_PLUGIN_CACHE="$(field pluginCachePath)"; EXPECTED_CACHE_VERIFIED="$(field pluginCacheVerified)"; EXPECTED_AUTH="$(field authSha256)"
+  SCHEMA="$(field schemaVersion)"; EXPECTED_RELEASE="$(field releaseId)"; EXPECTED_SCOPE="$(field systemdScope)"; EXPECTED_SERVICE="$(field serviceFile)"; EXPECTED_ROOT="$(field installRoot)"; EXPECTED_UID="$(field uid)"; EXPECTED_SERVICE_USER="$(field serviceUser)"; EXPECTED_SERVICE_GROUP="$(field serviceGroup)"; EXPECTED_SERVICE_UID="$(field serviceUid)"; EXPECTED_NODE_SHA="$(field runtimeNodeSha256)"; EXPECTED_RELEASE_SHA="$(field releaseTreeSha256)"; EXPECTED_PLUGIN_VERSION="$(field pluginVersion)"; EXPECTED_PLUGIN_SHA="$(field pluginTreeSha256)"; EXPECTED_PLUGIN_CACHE="$(field pluginCachePath)"; EXPECTED_CACHE_VERIFIED="$(field pluginCacheVerified)"; EXPECTED_AUTH="$(field authSha256)"
   ACTUAL_RELEASE="$(cat "$CURRENT/.release-id" 2>/dev/null || printf 'missing')"; ACTUAL_NODE_SHA="$(sha256sum "$INSTALL_ROOT/runtime/node" 2>/dev/null | awk '{print $1}')"; ACTUAL_RELEASE_SHA="$("$NODE_BIN" "$CURRENT/scripts/tree-digest.mjs" "$CURRENT" 2>/dev/null || true)"; ACTUAL_PLUGIN_SHA="$("$NODE_BIN" "$CURRENT/scripts/tree-digest.mjs" "$CURRENT/plugins/codex-worker-delegation" 2>/dev/null || true)"; ACTUAL_PLUGIN_VERSION="$($NODE_BIN -e 'const fs=require("fs");process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).version||"")' "$CURRENT/plugins/codex-worker-delegation/.codex-plugin/plugin.json")"
   [[ "$SCHEMA" == 3 ]] && pass 'install evidence schema v3' || fail "install evidence schema v3 (found $SCHEMA)"
   [[ "$EXPECTED_RELEASE" == "$ACTUAL_RELEASE" ]] && pass 'install record matches active release' || fail "install record matches active release ($EXPECTED_RELEASE != $ACTUAL_RELEASE)"
@@ -70,6 +76,12 @@ if [[ -f "$RECORD" && -n "$NODE_BIN" ]]; then
   [[ "$EXPECTED_SERVICE" == "$SERVICE_FILE" ]] && pass 'install record matches service file' || fail 'install record matches service file'
   [[ "$EXPECTED_ROOT" == "$INSTALL_ROOT" ]] && pass 'install record matches install root' || fail 'install record matches install root'
   [[ "$EXPECTED_UID" == "$EUID" ]] && pass 'install record matches deployment uid' || fail "install record matches deployment uid ($EXPECTED_UID != $EUID)"
+  if [[ "$SCOPE" == 'system' && -f "$SERVICE_FILE" ]]; then
+    ACTUAL_SERVICE_USER="$(sed -n 's/^User=//p' "$SERVICE_FILE" | head -1)"; ACTUAL_SERVICE_GROUP="$(sed -n 's/^Group=//p' "$SERVICE_FILE" | head -1)"; ACTUAL_SERVICE_UID="$(id -u "$ACTUAL_SERVICE_USER" 2>/dev/null || printf '')"
+    [[ -z "$EXPECTED_SERVICE_USER" || "$EXPECTED_SERVICE_USER" == "$ACTUAL_SERVICE_USER" ]] && pass 'install record matches system service user' || fail "install record matches system service user ($EXPECTED_SERVICE_USER != $ACTUAL_SERVICE_USER)"
+    [[ -z "$EXPECTED_SERVICE_GROUP" || "$EXPECTED_SERVICE_GROUP" == "$ACTUAL_SERVICE_GROUP" ]] && pass 'install record matches system service group' || fail "install record matches system service group ($EXPECTED_SERVICE_GROUP != $ACTUAL_SERVICE_GROUP)"
+    [[ -z "$EXPECTED_SERVICE_UID" || "$EXPECTED_SERVICE_UID" == "$ACTUAL_SERVICE_UID" ]] && pass 'install record matches system service uid' || fail "install record matches system service uid ($EXPECTED_SERVICE_UID != $ACTUAL_SERVICE_UID)"
+  fi
   [[ "$EXPECTED_NODE_SHA" == "$ACTUAL_NODE_SHA" ]] && pass 'pinned Node SHA-256 matches install record' || fail 'pinned Node SHA-256 matches install record'
   [[ -n "$EXPECTED_RELEASE_SHA" && "$EXPECTED_RELEASE_SHA" == "$ACTUAL_RELEASE_SHA" ]] && pass 'active release tree SHA-256 matches install record' || fail 'active release tree SHA-256 matches install record'
   [[ "$EXPECTED_PLUGIN_VERSION" == "$ACTUAL_PLUGIN_VERSION" && "$EXPECTED_PLUGIN_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+\+codex\.[a-f0-9]{20}$ ]] && pass 'plugin cachebuster version matches active release' || fail 'plugin cachebuster version matches active release'

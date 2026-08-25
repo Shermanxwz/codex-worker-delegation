@@ -2,13 +2,13 @@
 
 ## 中文概览
 
-本架构把项目定义为官方 Codex 的本地控制平面，而不是替代 ChatGPT 的客户端。官方 ChatGPT provider 和 OAuth 由 Codex 保留；New API 通过命名空间 provider、Responses 网关和显式 App Server thread 接入。路由由 Web 的 AUTO / WORKER / MAIN 状态决定，Verifier 是继承 Worker 的只读角色，不是第三套模型选择。
+本架构把项目定义为官方 Codex 的本地控制平面，而不是替代 ChatGPT 的客户端。官方 ChatGPT provider 和 OAuth 由 Codex 保留；New API 通过命名空间 provider、Responses 网关和显式 App Server thread 接入。路由由 Web 的 AUTO / WORKER / MAIN 状态决定，Verifier 是可独立配置、默认跟随 Worker 的只读角色。
 
 项目受控的真实边界包括：官方 → 官方可以走 native subagent；任何涉及第三方 provider 的任务都走 provider-isolated App Server thread；Worker task 必须有 task ID、heartbeat、进度、lease 和终态；官方下拉框不会因为 catalog-only 注入就被宣称已经合法嵌入。
 
 ## English overview
 
-This architecture treats the project as a local control plane for official Codex, not as a replacement ChatGPT client. Codex keeps ownership of the official ChatGPT provider and OAuth state; New API is connected through a namespaced provider, a Responses gateway, and explicit App Server threads. Web AUTO / WORKER / MAIN state is authoritative, while Verifier is a read-only role inheriting Worker rather than a third model selector.
+This architecture treats the project as a local control plane for official Codex, not as a replacement ChatGPT client. Codex keeps ownership of the official ChatGPT provider and OAuth state; New API is connected through a namespaced provider, a Responses gateway, and explicit App Server threads. Web AUTO / WORKER / MAIN state is authoritative, while Verifier is a read-only role with an independently configurable route that defaults to Worker.
 
 The controlled execution boundary is explicit: Official → Official may use native subagents; every route involving a third-party provider uses a provider-isolated App Server thread; every Worker task has a task ID, heartbeat, progress, lease, and terminal state; and catalog-only visibility is never claimed to be legal integration into the official picker.
 
@@ -43,11 +43,11 @@ The Web control plane deliberately exposes only selectors that affect execution:
 
 | Mode | Visible selectors | Runtime meaning |
 |---|---|---|
-| `AUTO` | Main only | Worker and Verifier inherit Main; the system may delegate substantial work. |
-| `DELEGATE` / `WORKER` | Main + Worker | Main coordinates; Worker executes. Verifier inherits Worker and is read-only. |
+| `AUTO` | Main + Worker + Verifier | Main handles simple work; the system automatically decides whether to delegate, and delegated roles use their independent configured routes. |
+| `DELEGATE` / `WORKER` | Main + Worker + Verifier | Main coordinates; Worker executes. Worker and Verifier use the explicitly selected routes and Verifier is read-only. |
 | `MAIN` | Main only | The root thread performs the work; Worker delegation is disabled. |
 
-Verifier is an internal read-only role, not a third execution mode and not an independent model slot. Its provider, model, and effort always inherit the Worker route in `DELEGATE` and the Main route in `AUTO`/`MAIN`. When the task flow requests verification, it runs on that inherited route; configuring the role alone does not launch a second turn. Provider-isolated tasks expose progress, heartbeats, task IDs, and an idempotent cancellation path that terminates only the task's App Server.
+Verifier is an internal read-only role, not a third execution mode. Its provider, model, and effort are independently stored for AUTO and DELEGATE, defaulting to the Worker route when no override is supplied. When the task flow requests verification, it runs on that route; configuring the role alone does not launch a second turn. Provider-isolated tasks expose progress, heartbeats, task IDs, and an idempotent cancellation path that terminates only the task's App Server.
 
 ## Official + third-party coexistence
 
@@ -96,7 +96,7 @@ Each visible route stores `effort`: `auto` or an explicit supported level. The W
 
 For New API traffic, the gateway does not forward inherited Codex reasoning by default. It strips an inherited `reasoning.effort`, but preserves an effort that matches an explicit Web route selection for that third-party model. This prevents the local global setting from leaking into an unconfigured route while allowing a deliberate Web setting to reach Responses or the Chat fallback bridge. If the upstream model does not support the selected value, the upstream may reject it; the UI therefore exposes `auto` and does not claim unsupported third-party capabilities.
 
-AUTO stores one Main route and makes Worker / Verifier inherit it. DELEGATE (shown as WORKER) stores Main + Worker routes and makes Verifier inherit Worker. MAIN stores one Main route and disables delegation.
+AUTO stores independent Main + Worker + Verifier routes and automatically decides whether to delegate. DELEGATE (shown as WORKER) stores the same three route roles and explicitly enables coordination. MAIN stores one Main route and disables delegation.
 
 ## Protocol detection
 

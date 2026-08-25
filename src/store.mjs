@@ -6,19 +6,19 @@ import { statePath, auditPath, gatewayTokenPath } from './paths.mjs';
 export const REASONING_EFFORTS = Object.freeze(['auto', 'none', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
 const role = (provider = 'official', model = '', effort = 'auto') => ({ provider, model, effort });
 const routingDefaults = () => ({
-  AUTO: { main: role('official'), worker: role('official'), verifier: role('official') },
+  AUTO: { main: role('official'), worker: role('third_party'), verifier: role('third_party') },
   DELEGATE: { main: role('official'), worker: role('third_party'), verifier: role('third_party') },
   MAIN: { main: role('official'), worker: role('official'), verifier: role('official') }
 });
 
 export const ROUTING_ROLES = Object.freeze({
-  AUTO: Object.freeze(['main']),
-  DELEGATE: Object.freeze(['main', 'worker']),
+  AUTO: Object.freeze(['main', 'worker', 'verifier']),
+  DELEGATE: Object.freeze(['main', 'worker', 'verifier']),
   MAIN: Object.freeze(['main'])
 });
 
 export const DEFAULT_STATE = Object.freeze({
-  schemaVersion: 4,
+  schemaVersion: 5,
   mode: 'AUTO',
   provider: null,
   protocolCache: {},
@@ -149,17 +149,37 @@ function normalizeRole(value, fallback) {
   return { provider, model, effort };
 }
 
+function sameRole(left, right) {
+  return Boolean(left && right)
+    && left.provider === right.provider
+    && String(left.model || '') === String(right.model || '')
+    && String(left.effort || 'auto') === String(right.effort || 'auto');
+}
+
 function normalizeRouting(value, legacyModels = {}) {
   const defaults = routingDefaults(); const output = {};
   for (const mode of ['AUTO', 'DELEGATE', 'MAIN']) {
     const raw = value?.[mode] || {};
     const mainFallback = { ...defaults[mode].main, model: legacyModels?.main || defaults[mode].main.model };
     const main = normalizeRole(raw.main, mainFallback);
-    if (mode === 'DELEGATE') {
-      const workerFallback = { ...defaults[mode].worker, model: legacyModels?.worker || defaults[mode].worker.model };
-      const worker = normalizeRole(raw.worker, workerFallback);
-      output[mode] = { main, worker, verifier: { ...worker } };
-    } else output[mode] = { main, worker: { ...main }, verifier: { ...main } };
+    if (mode === 'MAIN') { output[mode] = { main, worker: { ...main }, verifier: { ...main } }; continue; }
+
+    const delegateRaw = value?.DELEGATE || {};
+    const delegateWorkerFallback = {
+      ...defaults.DELEGATE.worker,
+      model: legacyModels?.worker || defaults.DELEGATE.worker.model
+    };
+    const delegateWorker = normalizeRole(delegateRaw.worker, delegateWorkerFallback);
+    const oldAutoInheritedMain = mode === 'AUTO'
+      && sameRole(raw.worker, raw.main)
+      && sameRole(raw.verifier, raw.main);
+    const workerFallback = mode === 'AUTO' && oldAutoInheritedMain
+      ? delegateWorker
+      : { ...defaults[mode].worker, model: legacyModels?.worker || defaults[mode].worker.model };
+    const worker = normalizeRole(oldAutoInheritedMain ? undefined : raw.worker, workerFallback);
+    const verifierFallback = { ...worker };
+    const verifier = normalizeRole(oldAutoInheritedMain ? undefined : raw.verifier, verifierFallback);
+    output[mode] = { main, worker, verifier };
   }
   return output;
 }
@@ -173,8 +193,11 @@ export function activeRouting(state, mode = state.mode) { const normalized = nor
 
 export function setRoutingMode(state, mode, roles = {}) {
   const normalized = normalizeState(state); const current = normalized.routing[mode] || normalized.routing.AUTO; const main = normalizeRole(roles.main, current.main);
-  if (mode === 'DELEGATE') { const worker = normalizeRole(roles.worker, current.worker); normalized.routing[mode] = { main, worker, verifier: { ...worker } }; }
-  else normalized.routing[mode] = { main, worker: { ...main }, verifier: { ...main } };
+  if (mode === 'AUTO' || mode === 'DELEGATE') {
+    const worker = normalizeRole(roles.worker, current.worker);
+    const verifier = normalizeRole(roles.verifier, current.verifier || worker);
+    normalized.routing[mode] = { main, worker, verifier };
+  } else normalized.routing[mode] = { main, worker: { ...main }, verifier: { ...main } };
   normalized.models = { main: normalized.routing[normalized.mode].main.model, worker: normalized.routing[normalized.mode].worker.model, verifier: normalized.routing[normalized.mode].verifier.model };
   return normalized;
 }

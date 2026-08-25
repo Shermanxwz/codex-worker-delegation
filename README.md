@@ -39,11 +39,11 @@ Web 控制平面是路由和权限的唯一事实来源。Web 中显示 WORKER�
 
 | 模式 | Web 可见模型选择 | 实际行为 |
 |---|---|---|
-| AUTO | 只有 Main | Main 处理简单工作；需要时由主控决定是否委派，Worker / Verifier 继承 Main |
-| WORKER（内部 DELEGATE） | Main + Worker | Main 负责协调，Worker 负责执行；Verifier 继承 Worker 并只读 |
+| AUTO | Main + Worker + Verifier | Main 处理简单工作；需要时由主控自动决定是否委派，Worker / Verifier 使用独立配置的路由 |
+| WORKER（内部 DELEGATE） | Main + Worker + Verifier | Main 负责协调，Worker 负责执行；Worker / Verifier 使用用户明确指定的路由 |
 | MAIN | 只有 Main | 只运行主线程，禁止 Worker delegation 和 native subagent |
 
-Verifier 不是第三种模式，也不是额外的独立模型选择。它是 Worker 路由的只读复核角色：在 DELEGATE 中继承 Web 选定的 Worker provider、model、reasoning effort；在 AUTO / MAIN 中继承 Main 路由。只有实际任务流程请求复核时才会启动。
+Verifier 不是第三种模式，而是只读复核角色；它拥有独立的 provider、model 和 reasoning effort 配置，默认可以跟随 Worker。只有实际任务流程请求复核时才会启动。AUTO 不再让 Worker / Verifier 继承 Main，因此可以把复杂执行和复核路由到低成本模型。
 
 ### 真实执行方式
 
@@ -215,11 +215,11 @@ The Web control plane is the source of truth. The Web label WORKER maps to the i
 
 | Mode | Visible model selectors | Runtime behavior |
 |---|---|---|
-| AUTO | Main only | Main handles simple work; the root may delegate substantial separable work, while Worker / Verifier inherit Main |
-| WORKER (DELEGATE) | Main + Worker | Main coordinates, Worker executes, and Verifier inherits Worker as read-only |
+| AUTO | Main + Worker + Verifier | Main handles simple work; the root automatically decides whether to delegate, while Worker / Verifier use independent configured routes |
+| WORKER (DELEGATE) | Main + Worker + Verifier | Main coordinates, Worker executes, and Worker / Verifier use the explicitly selected routes |
 | MAIN | Main only | The root thread runs the work; Worker delegation and native subagents are disabled |
 
-Verifier is not a third mode or an additional independent model slot. It is the read-only verification role of the Worker route. In DELEGATE it inherits the Web-selected Worker provider, model, and reasoning effort; in AUTO / MAIN it inherits Main. It starts only when the task flow requests verification.
+Verifier is not a third mode; it is a read-only verification role with its own provider, model, and reasoning-effort configuration, defaulting to the Worker route when no override is supplied. It starts only when the task flow requests verification. AUTO no longer inherits Main for Worker / Verifier, which allows substantial work and verification to use lower-cost models.
 
 ### Actual execution provenance
 

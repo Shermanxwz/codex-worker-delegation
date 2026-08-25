@@ -15,7 +15,7 @@ The mode is a policy and routing choice, not an automatic task launcher. A Worke
 - `AUTO`: keep trivial work on Main. Delegate separable/substantial body work and meaningful verification.
 - `DELEGATE`: the root thread is coordination-only. Body work must be delegated.
 
-Routing selectors follow the same boundary: `AUTO` exposes Main only and Worker/Verifier inherit it; `DELEGATE` exposes Main + Worker and Verifier inherits Worker; `MAIN` exposes Main only. Verifier is an internal read-only role, not a third model selector or a separate mode.
+Routing selectors follow the same boundary: `AUTO` and `DELEGATE` expose independent Main + Worker + Verifier routes; AUTO decides whether to delegate while DELEGATE explicitly enables collaboration; `MAIN` exposes Main only. Verifier is an internal read-only role, not a separate mode, and defaults to the Worker route when no override is configured.
 
 For delegated roles:
 
@@ -36,4 +36,4 @@ Do not change the top-level `model_provider` or `model` to switch providers. Pro
 
 ## Verification
 
-Verifier is the Worker route's read-only validation role. Use `cwd-verifier` or `delegate_worker(role="verifier")` when the task flow needs an independent read-only pass; in `DELEGATE`, it inherits the Web-selected Worker provider, model, and effort (for example, `MiniMax-M3`) and has no separate selector. Verifier App Server threads use the official `read-only` wire value; configuring the inherited role alone does not invoke a turn. The Web panel's **真实共存验收** is the authoritative runtime proof when the user wants to verify simultaneous ChatGPT login and New API operation on the actual Linux installation; this proof is independent of the stricter production-seal result.
+Verifier is the Worker route's read-only validation role. Use `cwd-verifier` or `delegate_worker(role="verifier")` when the task flow needs an independent read-only pass; AUTO and DELEGATE can select its provider, model, and effort independently, with Worker as the default (for example, `MiniMax-M3`). Verifier App Server threads use the official `read-only` wire value; configuring the role alone does not invoke a turn. The Web panel's **真实共存验收** is the authoritative runtime proof when the user wants to verify simultaneous ChatGPT login and New API operation on the actual Linux installation; this proof is independent of the stricter production-seal result.

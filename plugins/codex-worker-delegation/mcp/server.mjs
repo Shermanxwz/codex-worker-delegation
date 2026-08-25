@@ -30,7 +30,7 @@ function drain() {
 }
 
 async function handle(msg) {
-  if (msg.method === 'initialize') return reply(msg.id, { protocolVersion: msg.params?.protocolVersion || '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'codex-worker-delegation', version: '3.0.0' } });
+  if (msg.method === 'initialize') return reply(msg.id, { protocolVersion: msg.params?.protocolVersion || '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'codex-worker-delegation', version: '3.1.0' } });
   if (msg.method === 'notifications/initialized') return;
   if (msg.method === 'tools/list') return reply(msg.id, { tools: [
     { name: 'delegation_status', description: 'Read current Web-controlled delegation mode and redacted provider/model routing. Fails closed when control state is unavailable.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
