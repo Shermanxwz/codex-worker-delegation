@@ -93,6 +93,8 @@ The installer:
 
 An install failure restores the previous release instead of leaving a half-upgraded `current` tree.
 
+For a system-scope deployment installed by root, pass the non-root desktop identity explicitly with `CWD_SYSTEMD_SERVICE_USER` and `CWD_SYSTEMD_SERVICE_GROUP`. Every plugin/configuration write in install, rollback, recovery, and uninstall is executed as that identity with its passwd-resolved `HOME`. Direct root writes into a `/home/*` `CODEX_HOME` are rejected, and deployment validation checks ownership of the managed Codex files.
+
 ## Systemd boundary
 
 The production service is a user unit rather than a root service because the control plane must deliberately share the same Unix identity and `~/.codex` account state as the signed-in ChatGPT desktop user.

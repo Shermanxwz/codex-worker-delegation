@@ -145,7 +145,7 @@ export function createApp({ env = process.env, fetchImpl = fetch } = {}) {
         return sendJson(res, 200, { ok: true }, { 'set-cookie': webAuth.clearCookie() });
       }
       if (url.pathname.startsWith('/api/')) {
-        if (req.method === 'GET' && url.pathname === '/api/health') return sendJson(res, 200, { ok: true, version: '3.1.0', host, port, codexBinary: resolveCodexBinary(env), authRequired: await webAuth.isConfigured() || env.CWD_REQUIRE_AUTH === '1' || !isLoopback(host) });
+        if (req.method === 'GET' && url.pathname === '/api/health') return sendJson(res, 200, { ok: true, version: '3.1.1', host, port, codexBinary: resolveCodexBinary(env), authRequired: await webAuth.isConfigured() || env.CWD_REQUIRE_AUTH === '1' || !isLoopback(host) });
         if (!await authorizeUi(req, env, host, webAuth)) return sendJson(res, 401, { error: 'unauthorized' });
         if (req.method === 'GET' && url.pathname === '/api/state') return sendJson(res, 200, publicState(await store.read()));
         if (req.method === 'GET' && url.pathname === '/api/catalog') return sendJson(res, 200, await loadCatalog({ store, vault, env, fetchImpl, appServerPool }));

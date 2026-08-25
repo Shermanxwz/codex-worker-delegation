@@ -40,6 +40,13 @@ if [[ "$SCOPE" == 'system' ]]; then
     echo "Configured system service identity contains whitespace: $SERVICE_USER:$SERVICE_GROUP" >&2
     exit 2
   fi
+  if [[ "$SERVICE_USER" != 'root' ]]; then
+    HOME_DIR="$(cwd_user_home "$SERVICE_USER")"
+    [[ -n "${CODEX_HOME:-}" ]] || CODEX_HOME_DIR="$HOME_DIR/.codex"
+  elif [[ "$CODEX_HOME_DIR" == /home/* ]]; then
+    echo "Refusing a root system service with a non-root CODEX_HOME: $CODEX_HOME_DIR" >&2
+    exit 2
+  fi
 fi
 
 if [[ "$SCOPE" == 'system' ]]; then

@@ -4,6 +4,12 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PLUGIN_ROOT="$ROOT/plugins/codex-worker-delegation"
 MARKETPLACE="codex-worker-delegation-local"
 
+CODEX_HOME_DIR="${CODEX_HOME:-${HOME:-}/.codex}"
+if [[ "$EUID" -eq 0 && "$CODEX_HOME_DIR" == /home/* ]]; then
+  echo "Refusing to install a Codex plugin as root into a non-root CODEX_HOME: $CODEX_HOME_DIR" >&2
+  exit 2
+fi
+
 find_codex() {
   local candidate
   for candidate in "${CODEX_CLI_PATH:-}" "${CODEX_BIN:-}" "/usr/lib/chatgpt/resources/codex" "${HOME}/.local/bin/codex" "${HOME}/.codex/bin/codex" "${HOME}/.codex/packages/standalone/current/bin/codex" "${HOME}/.codex/packages/standalone/current/codex"; do

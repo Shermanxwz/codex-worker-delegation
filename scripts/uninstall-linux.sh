@@ -8,7 +8,15 @@ INSTALL_ROOT="$(cwd_install_root)"
 SCOPE="$(cwd_systemd_scope "$INSTALL_ROOT")"
 SERVICE_FILE="$(cwd_service_file "$SCOPE")"
 CURRENT="$INSTALL_ROOT/current"
+SERVICE_USER="$(cwd_service_user "$SCOPE")"; SERVICE_GROUP="$(cwd_service_group "$SCOPE")"; SERVICE_HOME="$(cwd_user_home "$SERVICE_USER")"
+if [[ "$SCOPE" == 'system' && "$SERVICE_USER" != 'root' ]]; then HOME="$SERVICE_HOME"; fi
 CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
+if [[ "$SCOPE" == 'system' && "$SERVICE_USER" == 'root' && "$CODEX_HOME_DIR" == /home/* ]]; then
+  echo "Refusing a root system service with a non-root CODEX_HOME: $CODEX_HOME_DIR" >&2
+  exit 2
+fi
+export HOME CODEX_HOME="$CODEX_HOME_DIR"
+run_as_service_user(){ cwd_run_as_service_user "$SCOPE" "$SERVICE_USER" "$SERVICE_HOME" "$CODEX_HOME_DIR" "$@"; }
 CONFIG_FILE="$CODEX_HOME_DIR/config.toml"
 OWNERSHIP_FILE="$INSTALL_ROOT/codex-config-ownership.json"
 HAD_PROJECT_MARKER=0
@@ -23,18 +31,18 @@ AUTH_BEFORE="$(auth_hash)"
 
 if [[ -d "$CURRENT" ]]; then
   if [[ -z "$NODE_BIN" || ! -x "$NODE_BIN" ]]; then echo "Node.js is required to reverse the managed Codex configuration safely." >&2; exit 2; fi
-  (cd "$CURRENT" && "$NODE_BIN" src/cli.mjs uninstall)
+  (cd "$CURRENT" && run_as_service_user "$NODE_BIN" src/cli.mjs uninstall)
 fi
 
 if [[ -n "$CODEX" ]]; then
-  if "$CODEX" plugin list --json 2>/dev/null | grep -Fq 'codex-worker-delegation@codex-worker-delegation-local'; then
-    "$CODEX" plugin remove codex-worker-delegation@codex-worker-delegation-local --json >/dev/null
+  if run_as_service_user "$CODEX" plugin list --json 2>/dev/null | grep -Fq 'codex-worker-delegation@codex-worker-delegation-local'; then
+    run_as_service_user "$CODEX" plugin remove codex-worker-delegation@codex-worker-delegation-local --json >/dev/null
   fi
-  if "$CODEX" plugin list --json 2>/dev/null | grep -Fq 'codex-worker-delegation@codex-worker-delegation-local'; then
+  if run_as_service_user "$CODEX" plugin list --json 2>/dev/null | grep -Fq 'codex-worker-delegation@codex-worker-delegation-local'; then
     echo "FATAL: Codex still reports codex-worker-delegation installed after removal." >&2; exit 1
   fi
-  "$CODEX" plugin marketplace remove codex-worker-delegation-local --json >/dev/null 2>&1 || true
-  if MARKETPLACES="$($CODEX plugin marketplace list --json 2>/dev/null)"; then
+  run_as_service_user "$CODEX" plugin marketplace remove codex-worker-delegation-local --json >/dev/null 2>&1 || true
+  if MARKETPLACES="$(run_as_service_user "$CODEX" plugin marketplace list --json 2>/dev/null)"; then
     if grep -Fq 'codex-worker-delegation-local' <<<"$MARKETPLACES"; then echo "FATAL: Codex marketplace entry still exists after removal." >&2; exit 1; fi
   fi
 fi

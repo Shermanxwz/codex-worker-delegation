@@ -50,6 +50,63 @@ cwd_service_file() { local scope="${1:-$(cwd_systemd_scope)}"; printf '%s/codex-
 
 cwd_systemctl() { local scope="$1"; shift; if [[ "$scope" == 'system' ]]; then systemctl "$@"; else systemctl --user "$@"; fi; }
 
+cwd_service_user() {
+  local scope="$1" service_file user
+  if [[ "$scope" != 'system' ]]; then id -un; return 0; fi
+  if [[ -n "${CWD_SYSTEMD_SERVICE_USER:-}" ]]; then printf '%s\n' "$CWD_SYSTEMD_SERVICE_USER"; return 0; fi
+  service_file="$(cwd_service_file "$scope")"
+  if [[ -r "$service_file" ]]; then
+    user="$(sed -n 's/^[[:space:]]*User=//p' "$service_file" | head -1)"
+    [[ -n "$user" ]] && { printf '%s\n' "$user"; return 0; }
+  fi
+  if command -v systemctl >/dev/null 2>&1; then
+    user="$(cwd_systemctl "$scope" show codex-worker-delegation.service -p User --value 2>/dev/null || true)"
+    [[ -n "$user" ]] && { printf '%s\n' "$user"; return 0; }
+  fi
+  printf 'root\n'
+}
+
+cwd_service_group() {
+  local scope="$1" service_file group
+  if [[ "$scope" != 'system' ]]; then id -gn; return 0; fi
+  if [[ -n "${CWD_SYSTEMD_SERVICE_GROUP:-}" ]]; then printf '%s\n' "$CWD_SYSTEMD_SERVICE_GROUP"; return 0; fi
+  service_file="$(cwd_service_file "$scope")"
+  if [[ -r "$service_file" ]]; then
+    group="$(sed -n 's/^[[:space:]]*Group=//p' "$service_file" | head -1)"
+    [[ -n "$group" ]] && { printf '%s\n' "$group"; return 0; }
+  fi
+  if command -v systemctl >/dev/null 2>&1; then
+    group="$(cwd_systemctl "$scope" show codex-worker-delegation.service -p Group --value 2>/dev/null || true)"
+    [[ -n "$group" ]] && { printf '%s\n' "$group"; return 0; }
+  fi
+  printf 'root\n'
+}
+
+cwd_user_home() {
+  local user="$1" entry home
+  if command -v getent >/dev/null 2>&1; then
+    entry="$(getent passwd "$user" 2>/dev/null || true)"
+  else
+    entry="$(awk -F: -v name="$user" '$1 == name { print; exit }' /etc/passwd 2>/dev/null || true)"
+  fi
+  home="$(printf '%s\n' "$entry" | awk -F: 'NF >= 6 { print $6; exit }')"
+  [[ -n "$home" && "$home" == /* ]] || { echo "Unable to resolve an absolute home for service user: $user" >&2; return 2; }
+  printf '%s\n' "$home"
+}
+
+cwd_run_as_service_user() {
+  local scope="$1" user="$2" home="$3" codex_home="$4"
+  shift 4
+  if [[ "$scope" != 'system' || "$user" == 'root' ]]; then
+    "$@"
+    return
+  fi
+  [[ "$EUID" -eq 0 ]] || { echo "System-scope user switching requires root." >&2; return 2; }
+  command -v runuser >/dev/null 2>&1 || { echo "runuser is required for system-scope user configuration writes." >&2; return 2; }
+  [[ "$home" == /* && "$codex_home" == /* ]] || { echo "Service HOME and CODEX_HOME must be absolute paths." >&2; return 2; }
+  runuser -u "$user" -- env HOME="$home" CODEX_HOME="$codex_home" USER="$user" LOGNAME="$user" "$@"
+}
+
 cwd_write_systemd_scope() {
   local install_root="$1" scope="$2" file tmp
   install_root="$(cwd_assert_safe_install_root "$install_root")" || return

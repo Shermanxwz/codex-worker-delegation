@@ -1,6 +1,6 @@
 {
   "name": "codex-worker-delegation",
-  "version": "3.1.0",
+  "version": "3.1.1",
   "private": true,
   "type": "module",
   "description": "Codex Linux control plane for explicit official/third-party thread routing, coexistence checks, and per-model Responses compatibility bridging.",

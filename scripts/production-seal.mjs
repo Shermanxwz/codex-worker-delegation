@@ -9,8 +9,10 @@ import { codexBinaryCandidates, resolveCodexBinary, withCodexAppServer } from '.
 import { CodexConfigManager, inspectTopLevel, sameTopLevelSelectors } from '../src/codex-config.mjs';
 import { activeRouting, StateStore } from '../src/store.mjs';
 import { codexHome } from '../src/paths.mjs';
+import { ensureCodexUserIdentity } from './ensure-codex-user-identity.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+ensureCodexUserIdentity();
 const MARKETPLACE = 'codex-worker-delegation-local';
 const SEAL_MARKER = 'CWD_PRODUCTION_SEAL_OK';
 const SEAL_HTTP_TIMEOUT_MS = Number(process.env.CWD_SEAL_HTTP_TIMEOUT_MS || 180000);

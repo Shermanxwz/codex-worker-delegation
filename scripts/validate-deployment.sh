@@ -26,13 +26,16 @@ if [[ -f "$SERVICE_FILE" ]]; then
   unit_has "Environment=CODEX_HOME=$ESCAPED_CODEX_HOME" && pass 'systemd CODEX_HOME matches target identity' || fail 'systemd CODEX_HOME matches target identity'
   if unit_has 'ProtectSystem=strict'; then fail 'systemd must not make delegated workspaces read-only with ProtectSystem=strict'; else pass 'systemd avoids workspace-breaking ProtectSystem=strict'; fi
   if grep -Eq '/root/Documents|codex-primary-runtime' "$SERVICE_FILE"; then fail 'unit contains no development-machine path'; else pass 'unit contains no development-machine path'; fi
+  EXPECTED_CODEX_UID="$EUID"
   if [[ "$SCOPE" == 'system' ]]; then
     SERVICE_USER="$(sed -n 's/^User=//p' "$SERVICE_FILE" | head -1)"
     SERVICE_GROUP="$(sed -n 's/^Group=//p' "$SERVICE_FILE" | head -1)"
     [[ -n "$SERVICE_USER" && "$SERVICE_USER" != *[[:space:]]* && $(id -u "$SERVICE_USER" 2>/dev/null || printf '') != '' ]] && pass "system service runs as existing identity $SERVICE_USER" || fail 'system service runs as an existing identity'
     [[ -n "$SERVICE_GROUP" && "$SERVICE_GROUP" != *[[:space:]]* && $(id -g "$SERVICE_GROUP" 2>/dev/null || printf '') != '' ]] && pass "system service uses existing group $SERVICE_GROUP" || fail 'system service uses an existing group'
-    if [[ -d "$HOME" && -n "$SERVICE_USER" ]]; then HOME_UID="$(stat -c '%u' "$HOME" 2>/dev/null || printf '')"; SERVICE_UID="$(id -u "$SERVICE_USER" 2>/dev/null || printf '')"; [[ -n "$HOME_UID" && "$HOME_UID" == "$SERVICE_UID" ]] && pass 'system service identity matches ChatGPT/Codex HOME owner' || fail 'system service identity matches ChatGPT/Codex HOME owner'; fi
+    if [[ -d "$HOME" && -n "$SERVICE_USER" ]]; then HOME_UID="$(stat -c '%u' "$HOME" 2>/dev/null || printf '')"; SERVICE_UID="$(id -u "$SERVICE_USER" 2>/dev/null || printf '')"; EXPECTED_CODEX_UID="$SERVICE_UID"; [[ -n "$HOME_UID" && "$HOME_UID" == "$SERVICE_UID" ]] && pass 'system service identity matches ChatGPT/Codex HOME owner' || fail 'system service identity matches ChatGPT/Codex HOME owner'; fi
   else if grep -Eq '^User=' "$SERVICE_FILE"; then fail 'user service must inherit the desktop Unix identity'; else pass 'user service inherits the desktop Unix identity'; fi; fi
+  check_managed_owner(){ local item="$1" bad; [[ -e "$item" ]] || return 0; [[ "$EXPECTED_CODEX_UID" =~ ^[0-9]+$ ]] || { fail "managed Codex path owner has a valid service uid: $item"; return; }; bad="$(find "$item" -xdev ! -uid "$EXPECTED_CODEX_UID" -print -quit 2>/dev/null || true)"; [[ -z "$bad" ]] && pass "managed Codex path owned by service identity: $item" || fail "managed Codex path owner matches service identity: $bad"; }
+  for managed in "$CODEX_HOME/config.toml" "$CODEX_HOME/config.toml.cwd-backup" "$CODEX_HOME/auth.json" "$CODEX_HOME/agents/cwd-worker.toml" "$CODEX_HOME/agents/cwd-verifier.toml" "$CODEX_HOME/plugins/cache/codex-worker-delegation-local"; do check_managed_owner "$managed"; done
   if command -v systemd-analyze >/dev/null 2>&1; then systemd-analyze verify "$SERVICE_FILE" >/dev/null 2>&1 && pass 'systemd unit syntax verifies' || fail 'systemd unit syntax verifies'; fi
 fi
 
