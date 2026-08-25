@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=./systemd-lib.sh
+source "$ROOT/scripts/systemd-lib.sh"
 PLUGIN_ROOT="$ROOT/plugins/codex-worker-delegation"
 MARKETPLACE="codex-worker-delegation-local"
 
 CODEX_HOME_DIR="${CODEX_HOME:-${HOME:-}/.codex}"
-if [[ "$EUID" -eq 0 && "$CODEX_HOME_DIR" == /home/* ]]; then
+if [[ "$EUID" -eq 0 && "$CODEX_HOME_DIR" == /home/* ]] && cwd_path_is_nonroot_owned "$CODEX_HOME_DIR"; then
   echo "Refusing to install a Codex plugin as root into a non-root CODEX_HOME: $CODEX_HOME_DIR" >&2
   exit 2
 fi

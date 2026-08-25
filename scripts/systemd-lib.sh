@@ -94,6 +94,23 @@ cwd_user_home() {
   printf '%s\n' "$home"
 }
 
+cwd_path_owner_uid() {
+  local path="$1" owner
+  path="$(readlink -m -- "$path" 2>/dev/null || printf '%s' "$path")"
+  while [[ "$path" != '/' ]]; do
+    if [[ -e "$path" ]]; then
+      owner="$(stat -c '%u' -- "$path" 2>/dev/null || true)"
+      [[ "$owner" =~ ^[0-9]+$ ]] && { printf '%s\n' "$owner"; return 0; }
+    fi
+    path="$(dirname -- "$path")"
+  done
+  printf '0\n'
+}
+
+cwd_path_is_nonroot_owned() {
+  [[ "$(cwd_path_owner_uid "$1")" != '0' ]]
+}
+
 cwd_run_as_service_user() {
   local scope="$1" user="$2" home="$3" codex_home="$4"
   shift 4

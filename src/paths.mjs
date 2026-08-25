@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,9 +12,18 @@ function identityHome(env = process.env) {
   return path.resolve(home);
 }
 
+function existingOwnerUid(value) {
+  let current = path.resolve(value);
+  while (current !== path.dirname(current)) {
+    try { return fs.statSync(current).uid; } catch { current = path.dirname(current); }
+  }
+  return 0;
+}
+
 function rejectRootUserPath(value, label) {
-  if (typeof process.getuid === 'function' && process.getuid() === 0 && path.resolve(value).startsWith('/home/')) {
-    throw new Error(`Refusing root access to user-scoped ${label}: ${path.resolve(value)}`);
+  const resolved = path.resolve(value);
+  if (typeof process.getuid === 'function' && process.getuid() === 0 && resolved.startsWith('/home/') && existingOwnerUid(resolved) !== 0) {
+    throw new Error(`Refusing root access to user-scoped ${label}: ${resolved}`);
   }
 }
 

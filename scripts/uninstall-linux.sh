@@ -12,8 +12,10 @@ SERVICE_USER="$(cwd_service_user "$SCOPE")"; SERVICE_GROUP="$(cwd_service_group 
 if [[ "$SCOPE" == 'system' && "$SERVICE_USER" != 'root' ]]; then HOME="$SERVICE_HOME"; fi
 CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
 if [[ "$SCOPE" == 'system' && "$SERVICE_USER" == 'root' && "$CODEX_HOME_DIR" == /home/* ]]; then
-  echo "Refusing a root system service with a non-root CODEX_HOME: $CODEX_HOME_DIR" >&2
-  exit 2
+  if cwd_path_is_nonroot_owned "$CODEX_HOME_DIR"; then
+    echo "Refusing a root system service with a non-root CODEX_HOME: $CODEX_HOME_DIR" >&2
+    exit 2
+  fi
 fi
 export HOME CODEX_HOME="$CODEX_HOME_DIR"
 run_as_service_user(){ cwd_run_as_service_user "$SCOPE" "$SERVICE_USER" "$SERVICE_HOME" "$CODEX_HOME_DIR" "$@"; }

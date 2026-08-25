@@ -13,6 +13,14 @@ function loadInstallRecord(env) {
   }
 }
 
+function existingOwnerUid(target) {
+  let current = path.resolve(target);
+  while (current !== path.dirname(current)) {
+    try { return fs.statSync(current).uid; } catch { current = path.dirname(current); }
+  }
+  return 0;
+}
+
 // System-scope deployment commands may be launched with sudo, but CODEX_HOME
 // still belongs to the signed-in desktop user. Never let root atomically
 // replace that user's config files: re-exec the seal under serviceUser.
@@ -24,8 +32,9 @@ export function ensureCodexUserIdentity() {
   const codexHome = path.resolve(env.CODEX_HOME || path.join(home, '.codex'));
 
   // Root's own Codex account is a legitimate root deployment and needs no
-  // identity hand-off. A /home/* CODEX_HOME is always a user account.
-  if (!codexHome.startsWith('/home/')) return;
+  // identity hand-off. A /home/* path owned by a non-root uid is a user
+  // account; root-owned CI/test homes under /home remain root-scoped.
+  if (!codexHome.startsWith('/home/') || existingOwnerUid(codexHome) === 0) return;
 
   const record = loadInstallRecord(env);
   const serviceUser = record?.serviceUser;

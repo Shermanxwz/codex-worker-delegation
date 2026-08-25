@@ -10,8 +10,10 @@ SERVICE_USER="$(cwd_service_user "$SCOPE")"; SERVICE_GROUP="$(cwd_service_group 
 if [[ "$SCOPE" == 'system' && "$SERVICE_USER" != 'root' ]]; then HOME="$SERVICE_HOME"; fi
 CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
 if [[ "$SCOPE" == 'system' && "$SERVICE_USER" == 'root' && "$CODEX_HOME_DIR" == /home/* ]]; then
-  echo "Refusing a root system service with a non-root CODEX_HOME: $CODEX_HOME_DIR" >&2
-  exit 2
+  if cwd_path_is_nonroot_owned "$CODEX_HOME_DIR"; then
+    echo "Refusing a root system service with a non-root CODEX_HOME: $CODEX_HOME_DIR" >&2
+    exit 2
+  fi
 fi
 export HOME CODEX_HOME="$CODEX_HOME_DIR"
 AUTH_FILE="$CODEX_HOME_DIR/auth.json"; auth_hash(){ if [[ -f "$AUTH_FILE" ]]; then sha256sum "$AUTH_FILE" | awk '{print $1}'; else printf 'absent\n'; fi; }

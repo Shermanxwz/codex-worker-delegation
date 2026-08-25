@@ -43,7 +43,7 @@ if [[ "$SCOPE" == 'system' ]]; then
   if [[ "$SERVICE_USER" != 'root' ]]; then
     HOME_DIR="$(cwd_user_home "$SERVICE_USER")"
     [[ -n "${CODEX_HOME:-}" ]] || CODEX_HOME_DIR="$HOME_DIR/.codex"
-  elif [[ "$CODEX_HOME_DIR" == /home/* ]]; then
+  elif [[ "$CODEX_HOME_DIR" == /home/* ]] && cwd_path_is_nonroot_owned "$CODEX_HOME_DIR"; then
     echo "Refusing a root system service with a non-root CODEX_HOME: $CODEX_HOME_DIR" >&2
     exit 2
   fi

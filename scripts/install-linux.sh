@@ -35,8 +35,10 @@ if [[ "$SCOPE" == 'system' && "$SERVICE_USER" != 'root' ]]; then
 fi
 CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
 if [[ "$SCOPE" == 'system' && "$SERVICE_USER" == 'root' && "$CODEX_HOME_DIR" == /home/* ]]; then
-  echo "Refusing a root system service with a non-root CODEX_HOME: $CODEX_HOME_DIR" >&2
-  exit 2
+  if cwd_path_is_nonroot_owned "$CODEX_HOME_DIR"; then
+    echo "Refusing a root system service with a non-root CODEX_HOME: $CODEX_HOME_DIR" >&2
+    exit 2
+  fi
 fi
 export HOME CODEX_HOME="$CODEX_HOME_DIR"
 VERSION="$($NODE_BIN -p "JSON.parse(require('fs').readFileSync('$ROOT/package.json','utf8')).version")"
