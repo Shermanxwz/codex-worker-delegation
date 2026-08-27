@@ -1,7 +1,7 @@
 {
   "name": "codex-worker-delegation",
-  "version": "3.1.1",
-  "description": "Explicit official/third-party thread routing and coexistence checks for ChatGPT Linux.",
+  "version": "3.2.0",
+  "description": "OAuth-safe Codex Main routing with provider-isolated Worker/Verifier execution and live model capability discovery.",
   "author": {
     "name": "Shermanxwz",
     "url": "https://github.com/Shermanxwz"
@@ -22,8 +22,8 @@
   "hooks": "./hooks/hooks.json",
   "interface": {
     "displayName": "Codex Worker Delegation",
-    "shortDescription": "Provider-isolated Codex workers",
-    "longDescription": "Control per-role provider/model routing from a local Web panel while preserving official ChatGPT authentication. Built-in OpenAI routes may use native subagents; third-party routes use explicit App Server threads to avoid current custom-provider subagent transport defects.",
+    "shortDescription": "OAuth-safe provider-isolated Codex workers",
+    "longDescription": "Keep an authenticated ChatGPT Main on the official provider, discover model-specific reasoning capabilities live, and route Worker/Verifier work through official native subagents or explicit provider-isolated App Server threads. OFFICIAL mode stays dormant so the installed Codex runtime owns its native defaults.",
     "developerName": "Shermanxwz",
     "category": "Developer Tools",
     "capabilities": [
@@ -32,7 +32,8 @@
     ],
     "defaultPrompt": [
       "Read delegation_status before substantial work.",
-      "Use native subagents only for built-in OpenAI routes. Use delegate_worker for every route involving a third-party provider."
+      "If mode is OFFICIAL, follow native Codex behavior and do not force plugin-managed delegation.",
+      "Use native subagents only for built-in OpenAI routes. Use delegate_worker for every configured route involving a third-party provider."
     ]
   }
 }
