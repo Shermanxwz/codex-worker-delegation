@@ -3,99 +3,142 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="theme-color" content="#101b35">
+  <meta name="theme-color" content="#111a33">
   <title>Codex Worker Delegation</title>
   <link rel="icon" href="/icon.png" type="image/png">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <div class="app-shell">
+  <section id="loginView" class="login-view" hidden>
+    <div class="login-panel">
+      <div class="brand-lockup"><img src="/icon.png" alt=""><div><b>Codex Worker</b><span>LOCAL CONTROL PLANE</span></div></div>
+      <div class="login-copy"><p class="eyebrow">CONTROL PLANE</p><h1>登录</h1><p>控制面密码与 ChatGPT OAuth、New API Key 完全独立。</p></div>
+      <label class="field">密码<input id="loginPassword" type="password" autocomplete="current-password" placeholder="输入控制面密码"></label>
+      <button id="loginButton" class="primary wide">登录</button>
+      <p id="loginResult" class="form-message"></p>
+    </div>
+  </section>
+
+  <div id="appShell" class="app-shell" hidden>
     <header class="topbar">
-      <a class="brand compact-brand" href="#dashboard" data-page-link="dashboard">
-        <img class="app-icon" src="/icon.png" alt="">
-        <span><b>Codex Worker</b><small>LOCAL CONTROL PLANE</small></span>
-      </a>
-      <div class="top-status"><span id="health" class="pill">offline</span><span id="authMini" class="pill">checking</span></div>
+      <a class="brand" href="#dashboard"><img src="/icon.png" alt=""><div><b>Codex Worker</b><span>DELEGATION CONTROL</span></div></a>
+      <div class="top-actions">
+        <span id="healthPill" class="status-pill neutral">连接中</span>
+        <span id="authPill" class="status-pill neutral">登录状态</span>
+        <button id="integrationButton" class="icon-button" title="Codex 原生集成" aria-label="Codex 原生集成">⚙</button>
+      </div>
     </header>
 
     <div class="workspace">
       <aside class="sidebar">
-        <div class="sidebar-label">CONTROL CENTER</div>
-        <nav class="app-nav" aria-label="主导航">
-          <a href="#dashboard" data-page-link="dashboard">概览 <span>⌂</span></a>
-          <a href="#security" data-page-link="security">访问保护 <span>盾</span></a>
-          <a href="#provider" data-page-link="provider">New API 配置 <span>钥</span></a>
-          <a href="#routing" data-page-link="routing">模型路由 <span>↗</span></a>
-          <a href="#connectivity" data-page-link="connectivity">模型连通性 <span>◌</span></a>
-          <a href="#integration" data-page-link="integration">Codex 原生集成 <span>⚙</span></a>
+        <nav aria-label="主导航">
+          <a href="#dashboard" data-page-link="dashboard"><span class="nav-icon">⌂</span><span>概览</span></a>
+          <a href="#provider" data-page-link="provider"><span class="nav-icon">◇</span><span>New API</span></a>
+          <a href="#routing" data-page-link="routing"><span class="nav-icon">↗</span><span>模型路由</span></a>
+          <a href="#connectivity" data-page-link="connectivity"><span class="nav-icon">◌</span><span>连通性</span></a>
+          <a href="#security" data-page-link="security"><span class="nav-icon">盾</span><span>访问保护</span></a>
         </nav>
-        <div class="sidebar-note">官方 ChatGPT OAuth 与第三方密钥分离保存。路由可以同时使用两者，但第三方不会被伪装成官方模型。</div>
+        <div class="sidebar-footer"><span>v3.2</span><small>OAuth / provider isolation</small></div>
       </aside>
 
       <main class="content">
-        <section class="page login-page" data-page="login" hidden>
-          <div class="login-shell">
-            <div class="page-heading"><div><p class="eyebrow">CONTROL PLANE LOGIN</p><h1>登录控制面</h1><p class="lead">这是本地 Web 控制面的独立登录入口。它只验证控制面密码，不会触碰 ChatGPT OAuth、New API Key 或 Codex 会话。</p></div></div>
-            <div class="card auth-card login-card">
-              <div class="section-head"><div><h2>欢迎回来</h2><p class="muted">登录后才能访问模型路由、连通性和 Codex 原生集成。</p></div><span class="pill">需登录</span></div>
-              <div id="loginPageForm" class="auth-form"><label>控制面密码<input id="loginPagePassword" type="password" autocomplete="current-password" placeholder="输入控制面密码"></label><button id="loginPageButton">登录控制面</button></div>
-              <pre id="loginPageResult" class="compact"></pre>
-            </div>
-          </div>
-        </section>
-
         <section class="page" data-page="dashboard">
-          <div class="page-heading hero-heading">
-            <div><p class="eyebrow">CHATGPT LINUX · CODEX NATIVE</p><h1>工作台</h1><p class="lead">把官方 ChatGPT、New API 和 Codex 原生线程放在一个清晰的本地控制面中。</p></div>
-            <button id="dashboardRefresh" class="secondary">刷新状态</button>
+          <div class="page-head">
+            <div><p class="eyebrow">RUNTIME STATUS</p><h1>概览</h1><p class="lead">当前模式、认证边界和真实路由状态一眼可见。</p></div>
+            <button id="refreshButton" class="secondary">刷新</button>
           </div>
-          <div class="summary-grid">
-            <article class="summary-card"><span class="summary-kicker">CURRENT MODE</span><b id="dashboardMode">检测中…</b><p id="dashboardHint" class="muted">正在读取当前路由。</p><a href="#routing" data-page-link="routing" class="text-link">调整模型路由 →</a></article>
-            <article class="summary-card"><span class="summary-kicker">OFFICIAL CHATGPT</span><b id="dashboardOfficial">检测中…</b><p class="muted">保持官方 OAuth，不改 auth.json。</p><a href="#integration" data-page-link="integration" class="text-link">查看原生集成 →</a></article>
-            <article class="summary-card"><span class="summary-kicker">NEW API</span><b id="dashboardThird">检测中…</b><p class="muted">模型来自上游 /v1/models。</p><a href="#connectivity" data-page-link="connectivity" class="text-link">测试模型 →</a></article>
-            <article class="summary-card"><span class="summary-kicker">ACCESS</span><b id="dashboardIntegration">检测中…</b><p class="muted">密码只保护控制面，不接触 ChatGPT OAuth。</p><a href="#security" data-page-link="security" class="text-link">管理访问保护 →</a></article>
-          </div>
-          <div class="card dashboard-card"><div class="section-head"><div><h2>从这里开始</h2><p class="muted">第一次使用建议按顺序完成访问保护、New API 配置、路由选择，然后安装 Codex 原生集成。</p></div></div><div class="quick-links"><a href="#security" data-page-link="security"><strong>01</strong><span>设置访问密码<small>首次设置密码并登录</small></span></a><a href="#provider" data-page-link="provider"><strong>02</strong><span>连接 New API<small>保存上游地址与密钥</small></span></a><a href="#routing" data-page-link="routing"><strong>03</strong><span>选择模型路由<small>AUTO / WORKER / MAIN</small></span></a><a href="#integration" data-page-link="integration"><strong>04</strong><span>安装并验收<small>验证官方与第三方共存</small></span></a></div></div>
-          <div class="notice"><strong>关于 ChatGPT 里的模型列表</strong><span>本控制面支持官方线程与 New API 线程同时工作；但官方 ChatGPT 的 <code>openai</code> 模型下拉框由 Codex 原生维护，当前模型条目没有第三方 provider 绑定。只把第三方 ID 塞进目录会出现“看得见、选中后仍走官方 provider”的错误路由，因此第三方通过独立 provider 线程和本地路由使用，官方列表与 OAuth 保持原样。</span></div>
-        </section>
 
-        <section class="page" data-page="security" hidden>
-          <div class="page-heading"><div><p class="eyebrow">SECURITY</p><h1>访问保护</h1><p class="lead">控制面密码独立于 ChatGPT 登录。设置后，所有管理 API 都需要登录；密码只保存为本地 salted scrypt hash。</p></div><span id="authBadge" class="pill">checking</span></div>
-          <div class="card auth-card">
-            <div class="section-head"><div><h2 id="authPageStatus">正在检查</h2><p id="authHint" class="muted">正在检查登录保护…</p></div></div>
-            <div id="authSetup" class="auth-form" hidden><div class="form-grid"><label>新密码<input id="setupPassword" type="password" autocomplete="new-password" placeholder="至少 14 位，大小写/数字/符号至少三类"></label><label>确认新密码<input id="setupPasswordConfirm" type="password" autocomplete="new-password" placeholder="再次输入相同密码"></label></div><button id="setupPasswordButton">设置密码并登录</button></div>
-            <div id="authChange" class="auth-form" hidden><div class="form-grid"><label>当前密码<input id="currentPassword" type="password" autocomplete="current-password"></label><label>新密码<input id="newPassword" type="password" autocomplete="new-password"></label><label>确认新密码<input id="newPasswordConfirm" type="password" autocomplete="new-password"></label></div><div class="actions"><button id="changePasswordButton">更换密码</button><button id="logoutButton" class="secondary">退出登录</button></div></div>
-            <pre id="authResult" class="compact"></pre>
+          <section class="mode-hero">
+            <div class="mode-hero-main"><span class="label">当前模式</span><div class="mode-line"><strong id="currentMode">—</strong><span id="effectiveBadge" class="effective-badge neutral">检测中</span></div><p id="modeDescription">正在读取控制面状态…</p></div>
+            <div class="mode-hero-side"><span class="label">Main 边界</span><strong id="mainBoundary">—</strong><p id="mainBoundaryHint">—</p></div>
+          </section>
+
+          <div class="mode-switcher" id="dashboardModes">
+            <button data-set-mode="OFFICIAL"><b>官方默认</b><span>完全跟随 Codex</span></button>
+            <button data-set-mode="AUTO"><b>AUTO</b><span>按需委派</span></button>
+            <button data-set-mode="DELEGATE"><b>WORKER</b><span>Main 只协调</span></button>
+            <button data-set-mode="MAIN"><b>MAIN</b><span>只跑主线程</span></button>
           </div>
-          <div class="card"><h2>保护边界</h2><div class="security-list"><span>✓ 密码使用 scrypt hash 保存，不保存明文</span><span>✓ HttpOnly / SameSite 会话，登录失败限速</span><span>✓ loopback 默认只允许本机；公网必须使用 HTTPS、CWD_REQUIRE_AUTH=1 和反向代理</span><span>✓ 控制面密码与 New API Key、ChatGPT OAuth 完全分离</span></div></div>
+
+          <div class="metric-grid">
+            <article class="metric-card"><span>OFFICIAL CHATGPT</span><strong id="officialMetric">—</strong><p id="officialDetail">—</p></article>
+            <article class="metric-card"><span>NEW API</span><strong id="thirdMetric">—</strong><p id="thirdDetail">—</p></article>
+            <article class="metric-card"><span>MODEL CAPABILITIES</span><strong id="capabilityMetric">—</strong><p id="capabilityDetail">—</p></article>
+            <article class="metric-card"><span>NATIVE INTEGRATION</span><strong id="integrationMetric">—</strong><p id="integrationDetail">右上角 ⚙ 查看低频设置</p></article>
+          </div>
+
+          <section class="card native-default-card">
+            <div><p class="eyebrow">LOW MAINTENANCE</p><h2>官方默认模式</h2><p>选择“官方默认”后，本插件不覆盖 Codex 的工具与多 Agent 策略，也不启动项目自己的 Worker。模型、reasoning 与官方 multi-agent 行为由已安装的 Codex runtime 自己维护。</p></div>
+            <div class="native-chip">UPSTREAM OWNED</div>
+          </section>
         </section>
 
         <section class="page" data-page="provider" hidden>
-          <div class="page-heading"><div><p class="eyebrow">PROVIDER</p><h1>New API 配置</h1><p class="lead">第三方密钥写入本项目加密 vault。Codex 只获得本地 gateway token，不会读取或替换 ChatGPT 的 auth.json。</p></div></div>
-          <div class="card"><div class="form-grid provider-grid"><label>Base URL<input id="baseUrl" placeholder="https://api.example.com/v1"></label><label>API Key<input id="apiKey" type="password" autocomplete="new-password" placeholder="首次配置或更换时填写"></label><label>协议<select id="protocol"><option value="auto">Auto：优先 Responses，不支持时回退 Chat</option><option value="responses">Responses</option><option value="chat">Chat Completions bridge</option></select></label></div><div class="actions"><button id="saveProvider">保存 New API</button><button id="probe" class="secondary">探测当前模型协议</button></div><pre id="providerResult" class="compact"></pre></div>
-          <div class="card provider-explainer"><h2>模型会出现在哪里？</h2><p class="muted">聊天型 New API 模型会出现在本控制面的路由和连通性列表中，并通过 <code>codex_worker_gateway</code> 的隔离线程执行；embedding / 向量模型只进入连通性列表，并通过 <code>/v1/embeddings</code> 测试，不会被错误地当成聊天模型。原生 Codex 的自定义 provider 目录也提供兼容格式，但它仍是独立 provider，当前不能合法混进官方 <code>openai</code> 模型下拉框。这样才能保留官方 provider 与登录状态不变。</p><div class="inline-links"><a href="#connectivity" data-page-link="connectivity">去测试模型 →</a><a href="#integration" data-page-link="integration">查看 Codex 集成 →</a></div></div>
+          <div class="page-head"><div><p class="eyebrow">NEW API</p><h1>第三方 Provider</h1><p class="lead">密钥只进本地加密 vault；不会替换 ChatGPT OAuth。</p></div></div>
+          <section class="card form-card">
+            <div class="form-grid three">
+              <label class="field">Base URL<input id="baseUrl" placeholder="https://api.example.com/v1"></label>
+              <label class="field">API Key<input id="apiKey" type="password" autocomplete="new-password" placeholder="首次配置或更换时填写"></label>
+              <label class="field">协议<select id="protocol"><option value="auto">Auto · Responses 优先</option><option value="responses">Responses</option><option value="chat">Chat Completions bridge</option></select></label>
+            </div>
+            <div class="actions"><button id="saveProvider" class="primary">保存</button><button id="probeProvider" class="secondary">探测</button></div>
+            <p id="providerResult" class="form-message"></p>
+          </section>
+          <section class="card subtle-card"><h2>能力来源规则</h2><p>模型与 reasoning 能力只采用上游明确返回的 metadata。第三方目录没有声明 reasoning 档位时，界面只提供 <b>Auto</b>，不会根据模型名猜测。</p></section>
         </section>
 
         <section class="page" data-page="routing" hidden>
-          <div class="page-heading"><div><p class="eyebrow">ROUTING</p><h1>模型路由</h1><p class="lead">AUTO 与 WORKER 都可以分别指定 Main、Worker、Verifier 路由；区别只在于 AUTO 自动判断是否委派，而 WORKER 显式启用协作。MAIN 只运行主线程。每个模型都可以单独设定思考强度。</p></div><button id="saveRouting">保存路由</button></div>
-          <div class="card"><div class="modes"><button data-mode="AUTO">AUTO</button><button data-mode="DELEGATE">WORKER</button><button data-mode="MAIN">MAIN</button></div><p id="modeHelp" class="muted"></p><div id="routing"></div><div class="legend"><span><b>AUTO</b>：独立指定 Main / Worker / Verifier，是否委派由任务自动判断</span><span><b>WORKER</b>：独立指定 Main / Worker / Verifier，显式启用协作路由</span><span><b>MAIN</b>：只运行主线程，服务端拒绝任何 Worker / Verifier 请求</span><span><b>Verifier</b>：只读验证角色；默认可跟随 Worker，也可以单独指定更轻量模型</span><span><b>思考强度</b>：auto 不发送 effort；显式值用于新线程；官方 Main 显式值还会同步 Codex 默认强度，第三方只转发网页明确选择的值</span></div><pre id="routingResult" class="compact"></pre></div>
+          <div class="page-head"><div><p class="eyebrow">ROUTING</p><h1>模型路由</h1><p class="lead">模型能力实时来自统一 Registry；模型变化时 reasoning 立即重算。</p></div><button id="saveRouting" class="primary">保存路由</button></div>
+          <div id="routingModes" class="tabs">
+            <button data-routing-mode="OFFICIAL">官方默认</button>
+            <button data-routing-mode="AUTO">AUTO</button>
+            <button data-routing-mode="DELEGATE">WORKER</button>
+            <button data-routing-mode="MAIN">MAIN</button>
+          </div>
+          <p id="routingModeHint" class="mode-hint"></p>
+          <div id="routingEditor" class="routing-editor"></div>
+          <p id="routingResult" class="form-message"></p>
         </section>
 
         <section class="page" data-page="connectivity" hidden>
-          <div class="page-heading"><div><p class="eyebrow">CONNECTIVITY</p><h1>模型连通性</h1><p class="lead">逐个模型发送最小真实请求，区分鉴权、上游状态、模型类型和 Responses / Chat / embeddings 协议。可以单个测试，也可以全部测试。</p></div><button id="testAllModels">测试全部模型</button></div>
-          <div class="card"><div id="connectivitySummary" class="metric-line">正在读取模型目录…</div><div id="modelTests" class="model-tests"><p class="muted">刷新模型目录后显示测试列表。</p></div><pre id="modelTestResult" class="compact"></pre></div>
+          <div class="page-head"><div><p class="eyebrow">CONNECTIVITY</p><h1>模型连通性</h1><p class="lead">只对 New API 发最小真实请求；官方模型健康由 Codex App Server 直接报告。</p></div><button id="testAllModels" class="primary">测试全部</button></div>
+          <section class="card"><div id="connectivitySummary" class="connectivity-summary">读取模型目录…</div><div id="modelTests" class="model-tests"></div><p id="modelTestResult" class="form-message"></p></section>
         </section>
 
-        <section class="page" data-page="integration" hidden>
-          <div class="page-heading"><div><p class="eyebrow">CODEX NATIVE</p><h1>Codex 原生集成</h1><p class="lead">安装 namespaced provider 与 worker / verifier roles；New API 通过显式 provider-isolated App Server 线程运行，再用真实线程证明官方 ChatGPT 和 New API 同时可用。</p></div><button id="install">安装 / 刷新</button></div>
-          <div class="card"><div id="integrationState" class="integration-status">正在读取集成状态…</div><div class="actions"><button id="verifyCoexistence">真实共存验收</button></div><pre id="coexistProof" class="compact"></pre></div>
-          <div class="notice"><strong>共存证明与严格封存不是一回事</strong><span>“真实共存验收”只证明官方账号和一个第三方线程可以同时完成；严格生产封存还要求所有发现的 New API 模型连通，并要求官方 Codex picker 真正包含第三方独有 ID。任一硬门槛未满足时，封存脚本会保留 <code>NOT_SEALED</code>。</span></div>
-          <div class="card"><h2>原生 Codex 模型可见性</h2><p id="nativeVisibility" class="muted">正在比较官方 model/list 与 New API /v1/models…</p><div class="notice"><strong>这里显示真实能力边界</strong><span>自定义 provider 可以通过显式 <code>modelProvider</code> 的 App Server 线程运行；但官方模型条目没有 provider 绑定字段。把第三方 ID 只塞进官方 catalog 会造成“看得见、选中后仍走 openai”的错误路由，因此验收不会把这种伪合并标为成功。</span></div></div>
-          <div class="card"><h2>真实路由测试</h2><p class="muted">任务会先生成一个可查询的任务 ID；执行过程中 Web 只读显示阶段、进度、租约、自动观察点、最近心跳和事件。到观察点时，服务端依据实质进展和心跳自动续期；只有心跳、没有实质进展、失去心跳或达到硬上限时会主动终止。Web 不提供停止或续期按钮，避免把 Worker 控制变成用户黑箱操作。MAIN 模式会在服务端直接拒绝，不会启动 Worker。</p><div class="test-grid"><label>测试任务<textarea id="testTask" rows="4">检查当前项目并只返回一行：WORKER_ROUTE_OK</textarea></label><label>测试角色<select id="testRole"><option value="worker">Worker</option><option value="verifier">Verifier（只读）</option></select></label></div><div class="actions"><button id="runWorker" class="secondary">运行当前模式路由</button></div><pre id="runResult"></pre><pre id="status"></pre></div>
+        <section class="page" data-page="security" hidden>
+          <div class="page-head"><div><p class="eyebrow">SECURITY</p><h1>访问保护</h1><p class="lead">这里只管理控制面密码，不触碰 ChatGPT 登录。</p></div><span id="securityStatus" class="status-pill neutral">检测中</span></div>
+          <section class="card auth-card">
+            <div id="setupPanel" hidden>
+              <h2>设置密码</h2><p class="muted">首次设置只需要新密码与确认密码。</p>
+              <div class="form-grid two"><label class="field">新密码<input id="setupPassword" type="password" autocomplete="new-password"></label><label class="field">确认密码<input id="setupConfirm" type="password" autocomplete="new-password"></label></div>
+              <button id="setupButton" class="primary">设置密码</button>
+            </div>
+            <div id="changePanel" hidden>
+              <h2>更换密码</h2>
+              <div class="form-grid three"><label class="field">当前密码<input id="currentPassword" type="password" autocomplete="current-password"></label><label class="field">新密码<input id="newPassword" type="password" autocomplete="new-password"></label><label class="field">确认密码<input id="newPasswordConfirm" type="password" autocomplete="new-password"></label></div>
+              <div class="actions"><button id="changePasswordButton" class="primary">更换密码</button><button id="logoutButton" class="secondary">退出登录</button></div>
+            </div>
+            <p id="securityResult" class="form-message"></p>
+          </section>
+          <section class="security-strip"><span>HttpOnly session</span><span>SameSite</span><span>scrypt hash</span><span>loopback by default</span></section>
         </section>
       </main>
     </div>
   </div>
+
+  <div id="drawerBackdrop" class="drawer-backdrop" hidden></div>
+  <aside id="integrationDrawer" class="drawer" aria-label="Codex 原生集成" aria-hidden="true">
+    <div class="drawer-head"><div><p class="eyebrow">CODEX NATIVE</p><h2>原生集成</h2></div><button id="closeDrawer" class="icon-button">×</button></div>
+    <div class="drawer-body">
+      <section class="drawer-status"><span>官方账号</span><strong id="drawerAccount">—</strong><p id="drawerAccountDetail">—</p></section>
+      <section class="drawer-status"><span>Provider capability API</span><strong id="drawerCapabilities">—</strong><p id="drawerCapabilitiesDetail">—</p></section>
+      <section class="drawer-status"><span>插件集成</span><strong id="drawerInstallState">—</strong><p>安装 namespaced provider 与 cwd-worker / cwd-verifier。</p></section>
+      <div class="actions vertical"><button id="installIntegration" class="primary">安装 / 刷新原生集成</button><button id="verifyCoexistence" class="secondary">真实共存验收</button></div>
+      <pre id="integrationResult" class="result-box"></pre>
+      <div class="drawer-note"><b>边界</b><p>ChatGPT OAuth 活跃时，Main 永远保持官方。第三方只通过显式 provider thread 共存；不会修改 auth.json 或官方顶层 provider。</p></div>
+    </div>
+  </aside>
+
   <script type="module" src="/app.js"></script>
 </body>
 </html>

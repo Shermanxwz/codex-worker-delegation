@@ -1,39 +1,51 @@
 ---
 name: codex-worker-delegation
-description: Use Web-controlled Codex native subagents and provider-isolated worker threads while preserving the user's official ChatGPT authentication.
+description: Use OAuth-safe Codex native subagents and provider-isolated Worker/Verifier threads with live model capability routing.
 ---
 
 # Codex Worker Delegation
 
-Treat the Web control plane as the source of truth for AUTO / DELEGATE / MAIN and for every Main / Worker / Verifier provider+model selection. Before substantial work, call `delegation_status` when the bundled MCP server is available.
+Treat the Web control plane as the source of truth for `OFFICIAL / AUTO / DELEGATE / MAIN`, current authentication state, and configured routes. Before substantial work, call `delegation_status` when the bundled MCP server is available.
 
-The mode is a policy and routing choice, not an automatic task launcher. A Worker runs only after a real `delegate_worker` call or a Web route-test request. The Web UI shows `DELEGATE` as `WORKER`. The active Web mode is authoritative; never pass a stale mode to bypass `MAIN`.
+## Mode contract
 
-## Execution rules
+- `OFFICIAL`: the plugin is dormant. Do not force `delegate_worker`, do not reinterpret the installed Codex runtime's native model/reasoning/multi-agent defaults, and do not require the control plane to stay healthy for ordinary Codex tools.
+- `AUTO`: keep trivial work on Main; delegate separable/substantial body work and meaningful verification according to the configured Worker/Verifier routes.
+- `DELEGATE` (Web label `WORKER`): the root Main is coordination-only. Body work must be delegated.
+- `MAIN`: the root Main performs the work; Worker delegation and native subagents are disabled.
 
-- `MAIN`: do not spawn or delegate. The root thread performs the work.
-- `AUTO`: keep trivial work on Main. Delegate separable/substantial body work and meaningful verification.
-- `DELEGATE`: the root thread is coordination-only. Body work must be delegated.
+Verifier is an internal read-only validation role, not a separate mode.
 
-Routing selectors follow the same boundary: `AUTO` and `DELEGATE` expose independent Main + Worker + Verifier routes; AUTO decides whether to delegate while DELEGATE explicitly enables collaboration; `MAIN` exposes Main only. Verifier is an internal read-only role, not a separate mode, and defaults to the Worker route when no override is configured.
+## Main authentication boundary
 
-For delegated roles:
+The active ChatGPT account is authoritative, not the presence of an `auth.json` file.
 
-1. **Main=Official ChatGPT and role=Official ChatGPT** → use current Codex native `spawn_agent`. Use `cwd-worker` or `cwd-verifier`, with the Web-selected model when an explicit model override is available.
-2. **Any route involving `third_party`** → call bundled MCP tool `delegate_worker`. The control plane creates a tracked task and a new official Codex App Server thread with an explicit `thread/start.modelProvider` and model. Use `profile: "quick"` for short probes or marker checks; use `profile: "standard"` for implementation and long-running work. If the tool returns a non-terminal task snapshot, the root Main may monitor it with `worker_status` and inspect its heartbeat, `progressEvidence`, progress events, scope, and result; do not start a duplicate task. The control plane automatically reviews each scheduled checkpoint: recent meaningful progress with a healthy heartbeat renews within the profile hard cap; real execution with a temporary heartbeat-only interval receives one bounded grace; repeated heartbeat-only, stalled, unavailable, or exhausted work is cancelled and audited. Manual `worker_extend` / `worker_cancel` are root-control fallbacks; do not ask the user to stop or renew a Worker from the Web page. This includes third-party→third-party routes as well as cross-provider routes.
+- When `account/read` reports `account.type="chatgpt"`, Main is the official Codex root. Main provider is locked to `official` in every custom mode. Never represent a third-party route as the ChatGPT root Main.
+- When no active ChatGPT OAuth account is observed, the control plane may select a third-party Main. That Main is a **standalone provider-isolated App Server thread**, not a provider switch inside the ChatGPT UI.
+- Never edit, replace, delete, copy, or re-login `auth.json` for third-party routing. The built-in `openai` provider and ChatGPT OAuth remain Codex-owned.
+- Do not change top-level `model_provider` or `model` to switch providers. Provider choice is per newly created thread.
 
-For the official → official case, the control plane can return the native-subagent instruction and provenance, but the root Codex thread remains responsible for performing `spawn_agent`. For any route involving `third_party`, do not substitute a native child for the provider-isolated App Server thread.
+## Model capability contract
 
-Do not force a third-party provider through native subagent transport. Current custom-provider Codex routes have reproduced failures where delegated payloads can be represented as provider-specific `agent_message`/`encrypted_content` and arrive empty at non-OpenAI providers. The isolated-thread path uses ordinary user-turn input instead.
+Model capability metadata is authoritative per `(provider, model)`.
 
-Never describe a provider-isolated thread as a native subagent. Preserve execution provenance from the tool result (`native_subagent_required`, `provider_isolated_thread`, or `cross_provider_thread`).
+- Official model choices and reasoning levels come from Codex `model/list`.
+- Official provider-wide capabilities may come from `modelProvider/capabilities/read` when the installed Codex supports it; lack of this optional method must not break compatibility.
+- Third-party reasoning levels are accepted only when the upstream model catalog explicitly advertises them.
+- If a model does not advertise reasoning levels, use `auto` only. Never guess effort values from a model name, family, vendor, or another model.
+- If the selected model changes and a previously selected effort is no longer advertised, reset to `auto` before execution.
 
-## Authentication boundary
+## Delegated execution rules
 
-Never edit, replace, delete, copy, or re-login `auth.json` for third-party routing. The built-in `openai` provider and ChatGPT OAuth remain Codex-owned. Third-party credentials stay in the local encrypted vault; Codex receives only a local command-backed gateway token through the namespaced `codex_worker_gateway` provider.
+1. **Main=Official ChatGPT and role=Official ChatGPT** → use current Codex native `spawn_agent` with `cwd-worker` / `cwd-verifier` when the active mode permits it.
+2. **Any configured Worker/Verifier route involving `third_party`** → call bundled MCP tool `delegate_worker`. The control plane creates a tracked task and a new official Codex App Server thread with explicit `thread/start.modelProvider` and model.
+3. **Third-party Main without OAuth** → use the control plane's standalone Main execution path. Its tools still obey the selected AUTO/DELEGATE/MAIN policy.
+4. Never force a third-party provider through native subagent transport. Current custom-provider Codex routes have reproduced payload-loss failures; explicit provider-isolated threads preserve execution provenance.
 
-Do not change the top-level `model_provider` or `model` to switch providers. Provider choice is per newly created thread.
+Every provider-isolated Worker/Verifier has a durable `wrk_...` task ID, heartbeat/progress evidence, bounded lease, automatic review, and an audited terminal state. If a task is still running, inspect it with `worker_status`; do not start a duplicate. `worker_extend` and `worker_cancel` remain root-control fallbacks.
 
 ## Verification
 
-Verifier is the Worker route's read-only validation role. Use `cwd-verifier` or `delegate_worker(role="verifier")` when the task flow needs an independent read-only pass; AUTO and DELEGATE can select its provider, model, and effort independently, with Worker as the default (for example, `MiniMax-M3`). Verifier App Server threads use the official `read-only` wire value; configuring the role alone does not invoke a turn. The Web panel's **真实共存验收** is the authoritative runtime proof when the user wants to verify simultaneous ChatGPT login and New API operation on the actual Linux installation; this proof is independent of the stricter production-seal result.
+Verifier is read-only. Use `cwd-verifier` or `delegate_worker(role="verifier")` when the task flow needs an independent pass. Never grant verifier mutation/execution authority.
+
+The Web panel's **真实共存验收** proves that an official ChatGPT account remains active before and after a real third-party App Server turn while official top-level selectors stay unchanged. This proof is separate from a full production/release seal.

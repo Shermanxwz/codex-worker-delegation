@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { StateStore, publicState, activeRouting, setRoutingMode, REASONING_EFFORTS } from './store.mjs';
+import { StateStore, publicState, activeRouting, setRoutingMode, ROUTING_MODES } from './store.mjs';
 import { SecretVault } from './vault.mjs';
 import { ResponsesGateway } from './gateway.mjs';
 import { probeProvider, listProviderModels, modelKind } from './provider.mjs';
@@ -11,14 +11,16 @@ import { toCodexModelsResponse } from './codex-models.mjs';
 import { CodexConfigManager, CODEX_GATEWAY_PROVIDER_ID, inspectTopLevel, sameTopLevelSelectors } from './codex-config.mjs';
 import { CodexAppServerPool, withCodexAppServer, resolveCodexBinary } from './app-server.mjs';
 import { executionPlan } from './policy.mjs';
+import { buildModelCapabilityRegistry, reconcileRoleRoute, reconcileRoutingWithRegistry, validateRoleRoute } from './model-capabilities.mjs';
 import { WebAuth, MIN_PASSWORD_LENGTH } from './web-auth.mjs';
 import { readJson } from './http-json.mjs';
 import { WorkerTaskManager, WORKER_MAX_TOTAL_TIMEOUT_MS, WORKER_QUICK_TIMEOUT_MS, WORKER_QUICK_MAX_TOTAL_TIMEOUT_MS, isTerminalTask, isWorkerTimeout, errorDetails, normalizeWorkerTimeout, normalizeWorkerMaxTotalTimeout } from './worker-jobs.mjs';
 export { executionPlan } from './policy.mjs';
 
+const VERSION = '3.2.0';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const contentTypes = { '.html':'text/html; charset=utf-8', '.js':'text/javascript; charset=utf-8', '.css':'text/css; charset=utf-8', '.svg':'image/svg+xml', '.png':'image/png', '.webmanifest':'application/manifest+json' };
-const MODES = new Set(['AUTO', 'DELEGATE', 'MAIN']);
+const MODES = new Set(ROUTING_MODES);
 const ROLES = new Set(['main', 'worker', 'verifier']);
 const PROVIDERS = new Set(['official', 'third_party']);
 const WORKER_SANDBOXES = new Set(['read-only', 'workspace-write', 'danger-full-access']);
@@ -27,6 +29,7 @@ const MAX_WORKER_TASK_BYTES = 512 * 1024;
 const MAX_CWD_LENGTH = 4096;
 const MAX_MODEL_ID_LENGTH = 512;
 const MAX_PROVIDER_URL_LENGTH = 4096;
+const MAX_EFFORT_LENGTH = 128;
 const HOOK_HEALTH_DOMAIN = 'cwd-hook-health-v1';
 const HOOK_NONCE = /^[a-f0-9]{48}$/;
 
@@ -87,6 +90,7 @@ export function createApp({ env = process.env, fetchImpl = fetch } = {}) {
   const port = Number(env.CWD_PORT || 8788);
   const host = env.CWD_HOST || '127.0.0.1';
   const codex = new CodexConfigManager({ env, gatewayBaseUrl: `http://127.0.0.1:${port}/v1` });
+  const runtimeContext = { store, vault, env, fetchImpl, codex, workerJobs, appServerPool };
 
   const server = http.createServer(async (req, res) => {
     try {
@@ -96,7 +100,7 @@ export function createApp({ env = process.env, fetchImpl = fetch } = {}) {
       if (req.method === 'GET' && url.pathname === '/v1/models') return serveGatewayModels(req, res, { store, vault, fetchImpl, nativeCatalog: url.searchParams.has('client_version') });
       if (req.method === 'POST' && url.pathname === '/internal/worker/start') {
         if (!await authorizeInternal(req, store)) return sendJson(res, 401, { error: 'invalid internal token' });
-        const task = await startWorkerTask(await readJson(req), { store, env, codex, workerJobs, appServerPool });
+        const task = await startWorkerTask(await readJson(req), runtimeContext);
         return sendJson(res, task.taskId ? 202 : 200, task);
       }
       if (req.method === 'POST' && url.pathname.startsWith('/internal/worker/cancel/')) {
@@ -122,8 +126,8 @@ export function createApp({ env = process.env, fetchImpl = fetch } = {}) {
       if (req.method === 'POST' && url.pathname === '/internal/worker/run') {
         if (!await authorizeInternal(req, store)) return sendJson(res, 401, { error: 'invalid internal token' });
         const body = await readJson(req);
-        if (body.waitForCompletion === true) return sendJson(res, 200, await executeWorker(body, { store, env, codex, workerJobs, appServerPool }));
-        const task = await startWorkerTask(body, { store, env, codex, workerJobs, appServerPool });
+        if (body.waitForCompletion === true) return sendJson(res, 200, await executeWorker(body, runtimeContext));
+        const task = await startWorkerTask(body, runtimeContext);
         return sendJson(res, task.taskId ? 202 : 200, task);
       }
       if (req.method === 'GET' && url.pathname === '/api/auth/status') return sendJson(res, 200, await authStatus({ req, env, host, webAuth }));
@@ -145,27 +149,37 @@ export function createApp({ env = process.env, fetchImpl = fetch } = {}) {
         return sendJson(res, 200, { ok: true }, { 'set-cookie': webAuth.clearCookie() });
       }
       if (url.pathname.startsWith('/api/')) {
-        if (req.method === 'GET' && url.pathname === '/api/health') return sendJson(res, 200, { ok: true, version: '3.1.1', host, port, codexBinary: resolveCodexBinary(env), authRequired: await webAuth.isConfigured() || env.CWD_REQUIRE_AUTH === '1' || !isLoopback(host) });
+        if (req.method === 'GET' && url.pathname === '/api/health') return sendJson(res, 200, { ok: true, version: VERSION, host, port, codexBinary: resolveCodexBinary(env), authRequired: await webAuth.isConfigured() || env.CWD_REQUIRE_AUTH === '1' || !isLoopback(host) });
         if (!await authorizeUi(req, env, host, webAuth)) return sendJson(res, 401, { error: 'unauthorized' });
         if (req.method === 'GET' && url.pathname === '/api/state') return sendJson(res, 200, publicState(await store.read()));
-        if (req.method === 'GET' && url.pathname === '/api/catalog') return sendJson(res, 200, await loadCatalog({ store, vault, env, fetchImpl, appServerPool }));
+        if (req.method === 'GET' && url.pathname === '/api/catalog') return sendJson(res, 200, await loadCatalog(runtimeContext));
+        if (req.method === 'GET' && url.pathname === '/api/runtime') {
+          const catalog = await loadCatalog(runtimeContext);
+          return sendJson(res, 200, catalog.runtime);
+        }
         if (req.method === 'PUT' && url.pathname === '/api/mode') {
           const { mode } = await readJson(req);
-          if (!MODES.has(mode)) return sendJson(res, 400, { error: 'mode must be AUTO, DELEGATE, or MAIN' });
+          if (!MODES.has(mode)) return sendJson(res, 400, { error: `mode must be ${ROUTING_MODES.join(', ')}` });
           const state = await store.update((s) => { s.mode = mode; return s; });
-          const cancelled = mode === 'MAIN' ? await workerJobs.cancelAll('MAIN mode activated by Web control') : [];
+          const cancelled = mode === 'OFFICIAL' || mode === 'MAIN' ? await workerJobs.cancelAll(`${mode} mode activated by Web control`) : [];
           const reasoningSync = await syncTopLevelReasoning(state, codex);
           await store.audit('mode.changed', { mode, reasoningSync, cancelledTaskIds: cancelled.map((task)=>task.taskId) });
           return sendJson(res, 200, publicState(state));
         }
         if (req.method === 'PUT' && url.pathname === '/api/routing') {
           const body = await readJson(req);
-          const mode = body.mode || (await store.read()).mode;
+          const current = await store.read();
+          const mode = body.mode || current.mode;
           if (!MODES.has(mode)) return sendJson(res, 400, { error: 'invalid mode' });
-          validateRouting(body.roles);
-          const state = await store.update((s) => setRoutingMode(s, mode, body.roles));
+          if (mode === 'OFFICIAL') {
+            const error = new Error('OFFICIAL mode is owned by native Codex defaults and does not accept custom routing');
+            error.code = 'OFFICIAL_MODE_NATIVE'; error.statusCode = 409; throw error;
+          }
+          const catalog = await loadCatalog(runtimeContext);
+          const normalizedRoles = validateRouting(body.roles, mode, catalog.registry);
+          const state = await store.update((s) => setRoutingMode(s, mode, normalizedRoles));
           const reasoningSync = await syncTopLevelReasoning(state, codex);
-          await store.audit('routing.changed', { mode, roles: body.roles, reasoningSync });
+          await store.audit('routing.changed', { mode, roles: normalizedRoles, reasoningSync, registryGeneratedAt: catalog.registry.generatedAt });
           return sendJson(res, 200, publicState(state));
         }
         if (req.method === 'PUT' && url.pathname === '/api/provider') {
@@ -212,6 +226,7 @@ export function createApp({ env = process.env, fetchImpl = fetch } = {}) {
           if (!webAuth.authenticated(req)) return sendJson(res, 401, { error: 'login required' });
           const body = await readJson(req);
           if (!await webAuth.verifyPassword(body.currentPassword)) return sendJson(res, 401, { error: 'current password is invalid' });
+          if (body.newPassword !== body.confirmPassword) return sendJson(res, 400, { error: 'password confirmation does not match' });
           await webAuth.changePassword(body.newPassword);
           webAuth.clear(req);
           const session = await webAuth.login(body.newPassword, req.socket.remoteAddress || 'unknown');
@@ -219,10 +234,10 @@ export function createApp({ env = process.env, fetchImpl = fetch } = {}) {
         }
         if (req.method === 'POST' && url.pathname === '/api/verify/coexistence') {
           const body = await readJson(req);
-          return sendJson(res, 200, await verifyCoexistence({ body, store, codex, env, appServerPool }));
+          return sendJson(res, 200, await verifyCoexistence({ body, ...runtimeContext }));
         }
         if (req.method === 'POST' && url.pathname === '/api/worker/start') {
-          const task = await startWorkerTask(await readJson(req), { store, env, codex, workerJobs, appServerPool });
+          const task = await startWorkerTask(await readJson(req), runtimeContext);
           return sendJson(res, task.taskId ? 202 : 200, task);
         }
         if (req.method === 'GET' && url.pathname.startsWith('/api/worker/status/')) {
@@ -232,9 +247,12 @@ export function createApp({ env = process.env, fetchImpl = fetch } = {}) {
         }
         if (req.method === 'POST' && url.pathname === '/api/worker/run') {
           const body = await readJson(req);
-          if (body.waitForCompletion === true) return sendJson(res, 200, await executeWorker(body, { store, env, codex, workerJobs, appServerPool }));
-          const task = await startWorkerTask(body, { store, env, codex, workerJobs, appServerPool });
+          if (body.waitForCompletion === true) return sendJson(res, 200, await executeWorker(body, runtimeContext));
+          const task = await startWorkerTask(body, runtimeContext);
           return sendJson(res, task.taskId ? 202 : 200, task);
+        }
+        if (req.method === 'POST' && url.pathname === '/api/main/run') {
+          return sendJson(res, 200, await runStandaloneMain(await readJson(req), runtimeContext));
         }
         return sendJson(res, 404, { error: 'not found' });
       }
@@ -270,21 +288,27 @@ async function serveGatewayModels(req, res, { store, vault, fetchImpl, nativeCat
   const apiKey = await vault.decrypt(state.provider.apiKeyCipher);
   const models = await listProviderModels({ baseUrl: state.provider.baseUrl, apiKey, fetchImpl, extraHeaders: state.provider.headers });
   if (nativeCatalog) return sendJson(res, 200, toCodexModelsResponse(models));
-  return sendJson(res, 200, { object: 'list', data: models.map((item) => ({ id: item.id, object: 'model', owned_by: item.ownedBy || state.provider.name || 'third-party', kind: item.kind || modelKind(item.id) })) });
+  return sendJson(res, 200, { object: 'list', data: models.map((item) => ({ id: item.id, object: 'model', owned_by: item.ownedBy || state.provider.name || 'third-party', kind: item.kind || modelKind(item.id), supported_reasoning_levels: item.supportedReasoningEfforts || undefined, default_reasoning_level: item.defaultReasoningEffort || undefined })) });
 }
 
-async function prepareWorker(body, { store, env }) {
+async function prepareWorker(body, context) {
+  const { store, env } = context;
   const state = await store.read();
   const mode = state.mode;
   const roleName = body.role || 'worker';
   if (body.mode && body.mode !== state.mode) { const error = new Error(`requested mode ${body.mode} does not match active Web mode ${state.mode}`); error.code = 'ACTIVE_MODE_MISMATCH'; error.statusCode = 409; throw error; }
   if (!MODES.has(mode) || !['worker', 'verifier'].includes(roleName)) throw new Error('invalid mode or worker role');
+  if (mode === 'OFFICIAL') { const error = new Error('OFFICIAL mode delegates behavior to native Codex and disables plugin-managed Worker execution'); error.code = 'OFFICIAL_MODE_NATIVE'; error.statusCode = 409; throw error; }
   if (mode === 'MAIN') { const error = new Error('MAIN mode disables delegation'); error.code = 'MAIN_MODE_LOCKED'; error.statusCode = 409; throw error; }
   if (typeof body.task !== 'string' || !body.task.trim()) throw new Error('task is required');
   if (Buffer.byteLength(body.task, 'utf8') > MAX_WORKER_TASK_BYTES) { const error = new Error(`task exceeds ${MAX_WORKER_TASK_BYTES} bytes`); error.statusCode = 413; error.code = 'WORKER_TASK_TOO_LARGE'; throw error; }
+
+  const catalog = await loadCatalog(context);
   const routes = activeRouting(state, mode);
-  const route = routes[roleName]; const main = routes.main;
-  if (!route?.model) throw new Error(`${mode}.${roleName} model is not configured`);
+  const mainReconciled = reconcileRoleRoute(routes.main, { role: 'main', registry: catalog.registry });
+  const main = { provider: mainReconciled.provider, model: mainReconciled.model, effort: mainReconciled.effort };
+  const validated = validateRoleRoute(routes[roleName], { role: roleName, registry: catalog.registry, requireModel: true });
+  const route = { provider: validated.provider, model: validated.model, effort: validated.effort };
   const plan = executionPlan(main, route, roleName);
   if (plan.execution === 'native_subagent_required') return { kind: 'native', ...plan, mode, role: roleName, provider: route.provider, model: route.model, effort: route.effort || 'auto', instruction: `Use Codex native spawn_agent with agent_type=${plan.agentType} and model=${route.model}${route.effort && route.effort !== 'auto' ? ` and reasoning_effort=${route.effort}` : ''}. This route stays on the built-in OpenAI provider.` };
   const rawCwd = body.cwd || process.cwd();
@@ -300,11 +324,11 @@ async function prepareWorker(body, { store, env }) {
   const timeoutMs = body.timeoutMs === undefined && profile === 'quick' ? WORKER_QUICK_TIMEOUT_MS : normalizeWorkerTimeout(body.timeoutMs);
   const defaultMaxTotal = profile === 'quick' ? WORKER_QUICK_MAX_TOTAL_TIMEOUT_MS : WORKER_MAX_TOTAL_TIMEOUT_MS;
   const maxTotalTimeoutMs = normalizeWorkerMaxTotalTimeout(body.maxTotalTimeoutMs === undefined ? defaultMaxTotal : body.maxTotalTimeoutMs, timeoutMs);
-  return { kind: 'app_server', state, mode, role: roleName, route, plan, task: body.task, cwd, sandbox, profile, timeoutMs, maxTotalTimeoutMs };
+  return { kind: 'app_server', state, mode, role: roleName, route, main, plan, task: body.task, cwd, sandbox, profile, timeoutMs, maxTotalTimeoutMs };
 }
 
 function progressFromNotification(message) {
-  const method = String(message?.method || ''); const params = message?.params || {}; const item = params.item || params.itemSummary || {};
+  const method = String(message?.method || ''); const params = message.params || {}; const item = params.item || params.itemSummary || {};
   const details = { method, threadId: params.threadId, turnId: params.turn?.id, itemId: item.id, itemType: item.type, status: params.turn?.status || item.status, phase: params.phase };
   if (method === 'thread/started') return { threadId: params.threadId, phase: 'thread_start', progress: 15, message: 'Codex App Server 线程已创建', event: { type: method, message: 'Codex App Server 线程已创建', details } };
   if (method === 'turn/started') return { turnId: params.turn?.id || null, phase: 'turn_start', progress: 20, message: 'Worker 已提交任务，等待模型执行', event: { type: method, message: 'Worker 已提交任务', details } };
@@ -315,8 +339,9 @@ function progressFromNotification(message) {
   return null;
 }
 
-async function startWorkerTask(body, { store, env, codex, workerJobs, appServerPool }) {
-  const prepared = await prepareWorker(body, { store, env });
+async function startWorkerTask(body, context) {
+  const { store, env, codex, workerJobs, appServerPool } = context;
+  const prepared = await prepareWorker(body, context);
   if (prepared.kind === 'native') return { ...prepared, status: 'delegation_required', taskId: null, message: '当前官方路由需要由主控 Codex 使用 native spawn_agent 执行。' };
   const { mode, role, route, plan, task, cwd, sandbox, profile, timeoutMs, maxTotalTimeoutMs } = prepared;
   return workerJobs.start({ mode, role, execution: plan.execution, provider: route.provider, model: route.model, effort: route.effort || 'auto', profile, cwd, timeoutMs, maxTotalTimeoutMs }, async ({ taskId, report, registerCancel, registerExtend }) => {
@@ -355,6 +380,7 @@ async function cancelWorkerTask(taskId, body = {}, { store, workerJobs }) {
 
 async function extendWorkerTask(taskId, body = {}, { store, workerJobs }) {
   const state = await store.read();
+  if (state.mode === 'OFFICIAL') { const error = new Error('OFFICIAL mode disables plugin-managed Worker lease extension'); error.code='OFFICIAL_MODE_NATIVE'; error.statusCode=409; throw error; }
   if (state.mode === 'MAIN') { const error = new Error('MAIN mode disables Worker lease extension'); error.code='MAIN_MODE_LOCKED'; error.statusCode=409; throw error; }
   const task = await workerJobs.get(taskId); if (!task) return null;
   const extended = await workerJobs.extend(taskId, { extraMs: body.extraMs, reason: body.reason });
@@ -362,8 +388,9 @@ async function extendWorkerTask(taskId, body = {}, { store, workerJobs }) {
   return extended;
 }
 
-async function executeWorker(body, { store, env, codex, workerJobs, appServerPool }) {
-  const started = await startWorkerTask(body, { store, env, codex, workerJobs, appServerPool });
+async function executeWorker(body, context) {
+  const { workerJobs } = context;
+  const started = await startWorkerTask(body, context);
   if (!started.taskId) return started;
   const waited = await workerJobs.wait(started.taskId, { timeoutMs: Number(started.maxTotalTimeoutMs || WORKER_MAX_TOTAL_TIMEOUT_MS) + 5000 });
   if (!waited || !isTerminalTask(waited)) { const error = new Error(`Worker task is still running; taskId=${started.taskId}`); error.code = 'WORKER_TIMEOUT'; error.taskId = started.taskId; throw error; }
@@ -371,13 +398,48 @@ async function executeWorker(body, { store, env, codex, workerJobs, appServerPoo
   return { ...waited.result, taskId: started.taskId, task: waited };
 }
 
-async function verifyCoexistence({ body, store, codex, env, appServerPool }) {
+async function runStandaloneMain(body, context) {
+  const { store, env, codex, appServerPool } = context;
+  if (typeof body.prompt !== 'string' || !body.prompt.trim()) throw new Error('prompt is required');
+  if (Buffer.byteLength(body.prompt, 'utf8') > MAX_WORKER_TASK_BYTES) { const error = new Error(`prompt exceeds ${MAX_WORKER_TASK_BYTES} bytes`); error.statusCode = 413; throw error; }
+  const state = await store.read();
+  if (state.mode === 'OFFICIAL') { const error = new Error('OFFICIAL mode uses the native Codex Main and does not launch a standalone Main'); error.code='OFFICIAL_MODE_NATIVE'; error.statusCode=409; throw error; }
+  const catalog = await loadCatalog(context);
+  if (catalog.registry.authentication.officialOAuth) {
+    const error = new Error('ChatGPT OAuth is active; Main is the official Codex root. Standalone Main execution is disabled to avoid a false provider switch.');
+    error.code = 'OFFICIAL_MAIN_IS_CHATGPT_ROOT'; error.statusCode = 409; throw error;
+  }
+  const route = activeRouting(state, state.mode).main;
+  const validated = validateRoleRoute(route, { role: 'main', registry: catalog.registry, requireModel: true });
+  const rawCwd = body.cwd || process.cwd();
+  if (typeof rawCwd !== 'string' || !rawCwd.trim() || rawCwd.length > MAX_CWD_LENGTH) throw new Error('cwd must be a non-empty path no longer than 4096 characters');
+  const cwd = path.resolve(rawCwd);
+  const stat = await fs.stat(cwd).catch(() => null); if (!stat?.isDirectory()) { const error = new Error(`cwd is not an accessible directory: ${cwd}`); error.statusCode=400; throw error; }
+  if (validated.provider === 'third_party') await ensureCodexIntegration({ store, codex, appServerPool });
+  const timeoutMs = Math.min(Math.max(Number(body.timeoutMs || 180000), 1000), 3600000);
+  const result = await withCodexAppServer((client) => client.runThread({
+    model: validated.model,
+    modelProvider: validated.provider === 'third_party' ? CODEX_GATEWAY_PROVIDER_ID : 'openai',
+    prompt: body.prompt,
+    cwd,
+    sandbox: 'workspace-write',
+    effort: validated.effort,
+    timeoutMs,
+    developerInstructions: 'You are the standalone Main coordinator selected by Codex Worker Delegation. Respect the active Web mode. In DELEGATE coordinate via the installed delegation tools; in AUTO use them when beneficial; in MAIN perform the work yourself.'
+  }), { env, pool: appServerPool, overallTimeoutMs: timeoutMs + 15000 });
+  await store.audit('main.standalone_completed', { mode: state.mode, provider: validated.provider, model: validated.model, effort: validated.effort, threadId: result.threadId, status: result.status });
+  return { standalone: true, mode: state.mode, provider: validated.provider, model: validated.model, ...result };
+}
+
+async function verifyCoexistence({ body, store, codex, env, appServerPool, ...context }) {
   const state = await store.read(); if (!state.provider) throw new Error('configure New API before coexistence verification');
-  const model = String(body.model || firstThirdPartyModel(state) || '').trim(); if (!model) throw new Error('select at least one third-party model before coexistence verification');
+  const catalog = await loadCatalog({ body, store, codex, env, appServerPool, ...context });
+  const model = String(body.model || catalog.registry.providers.third_party.defaultModel || firstThirdPartyModel(state) || '').trim(); if (!model) throw new Error('select at least one third-party model before coexistence verification');
+  validateRoleRoute({ provider:'third_party', model, effort:'auto' }, { role:'worker', registry:catalog.registry, requireModel:true });
   const selectorsBefore = inspectTopLevel(await codex.read()); const integration = await ensureCodexIntegration({ store, codex, appServerPool });
   const proof = await withCodexAppServer(async (client) => {
     const before = await client.getAccount({ refreshToken: false });
-    const thread = await client.runThread({ model, modelProvider: CODEX_GATEWAY_PROVIDER_ID, prompt: 'Reply with exactly CWD_COEXISTENCE_OK. Do not use tools.', cwd: body.cwd || process.cwd(), sandbox: 'read-only', effort: routeEffortForModel(state, 'third_party', model), developerInstructions: 'This is a read-only provider coexistence probe. Do not use tools or modify files; answer only with the requested marker.', timeoutMs: Number(body.timeoutMs || 120000) });
+    const thread = await client.runThread({ model, modelProvider: CODEX_GATEWAY_PROVIDER_ID, prompt: 'Reply with exactly CWD_COEXISTENCE_OK. Do not use tools.', cwd: body.cwd || process.cwd(), sandbox: 'read-only', effort: 'auto', developerInstructions: 'This is a read-only provider coexistence probe. Do not use tools or modify files; answer only with the requested marker.', timeoutMs: Number(body.timeoutMs || 120000) });
     const after = await client.getAccount({ refreshToken: false }); return { before, thread, after };
   }, { env, pool: appServerPool, overallTimeoutMs: Number(body.timeoutMs || 120000) + 15000 });
   const selectorsAfter = inspectTopLevel(await codex.read()); const officialBefore = proof.before?.account?.type === 'chatgpt'; const officialAfter = proof.after?.account?.type === 'chatgpt'; const selectorStable = sameTopLevelSelectors(selectorsBefore, selectorsAfter); const thirdPartyThreadOk = proof.thread?.status === 'completed' && Boolean(proof.thread?.output?.trim()); const markerObserved = proof.thread?.output?.includes('CWD_COEXISTENCE_OK') || false;
@@ -385,16 +447,91 @@ async function verifyCoexistence({ body, store, codex, env, appServerPool }) {
   await store.audit('coexistence.verified', { ok: result.ok, model, markerObserved, officialBefore, officialAfter, selectorStable }); return result;
 }
 
-function firstThirdPartyModel(state) { for (const mode of [...new Set([state.mode, 'DELEGATE', 'AUTO', 'MAIN'])]) { const routes = activeRouting(state, mode); for (const roleName of ['worker', 'verifier', 'main']) if (routes[roleName]?.provider === 'third_party' && routes[roleName]?.model) return routes[roleName].model; } return ''; }
-function routeEffortForModel(state, provider, model) { for (const routes of Object.values(state.routing || {})) for (const route of Object.values(routes || {})) if (route?.provider === provider && route.model === model && route.effort && route.effort !== 'auto') return route.effort; return 'auto'; }
+function firstThirdPartyModel(state) { for (const mode of [...new Set([state.mode, 'DELEGATE', 'AUTO', 'MAIN', 'OFFICIAL'])]) { const routes = activeRouting(state, mode); for (const roleName of ['worker', 'verifier', 'main']) if (routes[roleName]?.provider === 'third_party' && routes[roleName]?.model) return routes[roleName].model; } return ''; }
 function summarizeAccount(result) { const a = result?.account || null; return a ? { type: a.type || null, planType: a.planType || null, email: a.email || null, requiresOpenaiAuth: result?.requiresOpenaiAuth ?? null } : { type: null, planType: null, email: null, requiresOpenaiAuth: result?.requiresOpenaiAuth ?? null }; }
 function publicSelectors(value = {}) { return Object.fromEntries(['model_provider','model'].filter((k)=>value[k]?.raw).map((k)=>[k,value[k].raw])); }
 
 async function loadCatalog({ store, vault, env, fetchImpl, appServerPool }) {
-  const state = await store.read(); const result = { official: { ok: false, models: [], account: null, requiresOpenaiAuth: null, error: null }, thirdParty: { ok: false, models: [], configured: Boolean(state.provider), error: null } };
-  try { const official = await withCodexAppServer(async (client) => { const [models, account] = await Promise.all([client.listModels(), client.getAccount({ refreshToken: false })]); return { models, account }; }, { env, pool: appServerPool, overallTimeoutMs: 30000 }); result.official.models = official.models; result.official.account = official.account?.account || null; result.official.requiresOpenaiAuth = Boolean(official.account?.requiresOpenaiAuth); result.official.ok = true; } catch (error) { result.official.error = error.message; }
-  if (!state.provider) result.thirdParty.error = 'New API provider is not configured'; else { try { const apiKey = await vault.decrypt(state.provider.apiKeyCipher); result.thirdParty.models = await listProviderModels({ baseUrl: state.provider.baseUrl, apiKey, fetchImpl, extraHeaders: state.provider.headers }); result.thirdParty.ok = true; } catch (error) { result.thirdParty.error = error.message; } }
+  const state = await store.read();
+  const result = {
+    official: { ok: false, models: [], account: null, requiresOpenaiAuth: null, providerCapabilities: null, providerCapabilitiesError: null, error: null },
+    thirdParty: { ok: false, models: [], configured: Boolean(state.provider), error: null },
+    registry: null,
+    reconciliation: { changes: [] },
+    runtime: null
+  };
+  let accountRead = null;
+  try {
+    const official = await withCodexAppServer(async (client) => {
+      const [models, account] = await Promise.all([client.listModels(), client.getAccount({ refreshToken: false })]);
+      let providerCapabilities = null; let providerCapabilitiesError = null;
+      try { providerCapabilities = await client.getModelProviderCapabilities(); }
+      catch (error) { providerCapabilitiesError = error.message; }
+      return { models, account, providerCapabilities, providerCapabilitiesError };
+    }, { env, pool: appServerPool, overallTimeoutMs: 30000 });
+    accountRead = official.account;
+    result.official.models = official.models;
+    result.official.account = official.account?.account || null;
+    result.official.requiresOpenaiAuth = Boolean(official.account?.requiresOpenaiAuth);
+    result.official.providerCapabilities = official.providerCapabilities;
+    result.official.providerCapabilitiesError = official.providerCapabilitiesError;
+    result.official.ok = true;
+  } catch (error) { result.official.error = error.message; }
+
+  if (!state.provider) result.thirdParty.error = 'New API provider is not configured';
+  else {
+    try {
+      const apiKey = await vault.decrypt(state.provider.apiKeyCipher);
+      result.thirdParty.models = await listProviderModels({ baseUrl: state.provider.baseUrl, apiKey, fetchImpl, extraHeaders: state.provider.headers });
+      result.thirdParty.ok = true;
+    } catch (error) { result.thirdParty.error = error.message; }
+  }
+
+  result.registry = buildModelCapabilityRegistry({
+    officialModels: result.official.models,
+    thirdPartyModels: result.thirdParty.models,
+    accountRead,
+    officialProviderCapabilities: result.official.providerCapabilities,
+    thirdPartyConfigured: Boolean(state.provider)
+  });
+  result.reconciliation = reconcileRoutingWithRegistry(state.routing, result.registry);
+  result.runtime = buildRuntimeStatus(state, result);
   return result;
+}
+
+function buildRuntimeStatus(state, catalog) {
+  const mode = state.mode;
+  const effectiveRouting = catalog.reconciliation.routing?.[mode] || activeRouting(state, mode);
+  const roleNames = mode === 'AUTO' || mode === 'DELEGATE' ? ['main','worker','verifier'] : ['main'];
+  const routeErrors = [];
+  if (mode !== 'OFFICIAL') {
+    for (const role of roleNames) {
+      try { validateRoleRoute(effectiveRouting[role], { role, registry: catalog.registry, requireModel: true }); }
+      catch (error) { routeErrors.push({ role, code: error.code || null, error: error.message }); }
+    }
+  }
+  const thirdPartyUsed = mode !== 'OFFICIAL' && roleNames.some((role) => effectiveRouting?.[role]?.provider === 'third_party');
+  const effective = mode === 'OFFICIAL'
+    ? catalog.official.ok
+    : routeErrors.length === 0 && catalog.official.ok && (!thirdPartyUsed || catalog.thirdParty.ok);
+  return {
+    mode,
+    modeLabel: mode === 'OFFICIAL' ? '官方默认' : mode === 'DELEGATE' ? 'WORKER' : mode,
+    effective,
+    status: effective ? 'effective' : 'not_effective',
+    officialOAuth: Boolean(catalog.registry.authentication.officialOAuth),
+    mainProviderLocked: Boolean(catalog.registry.mainPolicy.providerLocked),
+    mainPolicy: catalog.registry.mainPolicy,
+    effectiveRouting,
+    reconciliationChanges: catalog.reconciliation.changes,
+    routeErrors,
+    officialHealthy: catalog.official.ok,
+    thirdPartyConfigured: catalog.thirdParty.configured,
+    thirdPartyHealthy: catalog.thirdParty.ok,
+    thirdPartyUsed,
+    integrationInstalled: Boolean(state.installed),
+    officialProviderCapabilities: catalog.official.providerCapabilities || null
+  };
 }
 
 async function authorizeUi(req, env, host, webAuth) { const token = env.CWD_WEB_TOKEN; if (token && req.headers.authorization === `Bearer ${token}`) return true; if (await webAuth.isConfigured()) return webAuth.authenticated(req); return isLoopback(host) && env.CWD_REQUIRE_AUTH !== '1'; }
@@ -406,15 +543,27 @@ async function ensureCodexIntegration({ store, codex, appServerPool }) {
   if (state.installed && await codex.isInstalled()) return { providerId: CODEX_GATEWAY_PROVIDER_ID, agents: ['cwd-worker', 'cwd-verifier'], topLevelPreserved: true, cached: true };
   const snap = await codex.install(); await store.update((s) => { s.installed = true; return s; }); await appServerPool?.reset(); return snap;
 }
-async function syncTopLevelReasoning(state, codex) { const main = activeRouting(state, state.mode).main; if (main?.provider !== 'official' || !main.effort || main.effort === 'auto') return { changed: false, scope: 'app-server-route-only', effort: main?.effort || 'auto' }; return { ...(await codex.setReasoningEffort(main.effort)), scope: 'official-top-level-default' }; }
-function validateRouting(roles) {
-  if (!roles || typeof roles !== 'object') throw new Error('roles is required');
-  for (const [name, value] of Object.entries(roles)) {
-    if (!ROLES.has(name)) throw new Error(`unknown role ${name}`);
-    if (!PROVIDERS.has(value?.provider)) throw new Error(`${name}.provider must be official or third_party`);
-    if (typeof value?.model !== 'string' || value.model.length > MAX_MODEL_ID_LENGTH) throw new Error(`${name}.model must be a string no longer than ${MAX_MODEL_ID_LENGTH} characters`);
-    if (value?.effort !== undefined && !REASONING_EFFORTS.includes(value.effort)) throw new Error(`${name}.effort must be auto, none, low, medium, high, xhigh, max, or ultra`);
+async function syncTopLevelReasoning(state, codex) {
+  if (state.mode === 'OFFICIAL') return { changed:false, scope:'codex-native-default', effort:'native' };
+  const main = activeRouting(state, state.mode).main;
+  if (main?.provider !== 'official' || !main.effort || main.effort === 'auto') return { changed: false, scope: 'app-server-route-only', effort: main?.effort || 'auto' };
+  return { ...(await codex.setReasoningEffort(main.effort)), scope: 'official-top-level-default' };
+}
+function validateRouting(roles, mode, registry) {
+  if (!roles || typeof roles !== 'object' || Array.isArray(roles)) throw new Error('roles is required');
+  const expected = mode === 'AUTO' || mode === 'DELEGATE' ? ['main','worker','verifier'] : ['main'];
+  const output = {};
+  for (const name of Object.keys(roles)) if (!ROLES.has(name) || !expected.includes(name)) throw new Error(`unknown or inactive role ${name} for mode ${mode}`);
+  for (const name of expected) {
+    const value = roles[name];
+    if (!value || typeof value !== 'object') throw new Error(`${name} route is required`);
+    if (!PROVIDERS.has(value.provider)) throw new Error(`${name}.provider must be official or third_party`);
+    if (typeof value.model !== 'string' || !value.model.trim() || value.model.length > MAX_MODEL_ID_LENGTH) throw new Error(`${name}.model must be a non-empty string no longer than ${MAX_MODEL_ID_LENGTH} characters`);
+    if (value.effort !== undefined && (typeof value.effort !== 'string' || !value.effort.trim() || value.effort.length > MAX_EFFORT_LENGTH)) throw new Error(`${name}.effort must be auto or an upstream-advertised non-empty value`);
+    const validated = validateRoleRoute(value, { role:name, registry, requireModel:true });
+    output[name] = { provider:validated.provider, model:validated.model, effort:validated.effort };
   }
+  return output;
 }
 function validateProvider(body) {
   if (!body?.baseUrl || typeof body.baseUrl !== 'string' || body.baseUrl.length > MAX_PROVIDER_URL_LENGTH) throw new Error('baseUrl is required and must be no longer than 4096 characters');

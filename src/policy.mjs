@@ -18,9 +18,16 @@ export function executionPlan(main, route, roleName = 'worker') {
   return { execution: route?.provider === main?.provider ? 'provider_isolated_thread' : 'cross_provider_thread', agentType:null, reason: route?.provider === 'third_party' || main?.provider === 'third_party' ? 'Third-party/native subagent transport remains unreliable in current Codex; use an explicit provider-specific App Server thread.' : 'Provider differs from the root thread; use a provider-specific App Server thread.' };
 }
 
-export function evaluateTool({ mode='AUTO', toolName, agentId, agentType, toolInput, state }) {
+export function evaluateTool({ mode='OFFICIAL', toolName, agentId, agentType, toolInput, state }) {
   const isSubagent=Boolean(agentId || agentType);
   const isVerifier=String(agentType||'').toLowerCase().includes('verifier');
+
+  // OFFICIAL is deliberately dormant. It exists so a fresh installation can
+  // inherit Codex's native tool, model and multi-agent behavior without this
+  // plugin shadowing upstream policy. This check must happen before verifier
+  // restrictions because OFFICIAL means the plugin has no policy authority.
+  if (mode === 'OFFICIAL') return {allow:true,reason:'OFFICIAL mode defers tool and multi-agent policy to the installed Codex runtime.'};
+
   if (isVerifier && VERIFIER_BLOCKED.some((pattern)=>pattern.test(String(toolName)))) return {allow:false,reason:'Verifier role is read-only; mutation and execution tools are blocked.'};
 
   if (!isSubagent && SPAWN.has(toolName)) {

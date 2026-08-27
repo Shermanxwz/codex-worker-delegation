@@ -2,64 +2,135 @@
 
 ## 中文概览
 
-项目把官方 ChatGPT 登录、New API 密钥、Web 密码和 Worker 执行权限分成不同边界：不修改或复制 auth.json；New API key 只进入本地 AES-256-GCM vault；Codex 只拿到本地 gateway token；Web 默认只监听 loopback，生产与本地启动器默认要求 Web 认证；Worker / Verifier 通过真实 task ID 和 provider-isolated App Server thread 执行。
+Codex Worker Delegation 3.2 把五个边界分开：
 
-Web 密码只保护本地控制平面，退出 Web session 不会退出 ChatGPT。MAIN 是服务端强制锁；Worker 任务的取消和续期属于主控 fallback，Web 页面只能查看状态。JSON 请求体必须使用 `application/json` 或 `application/*+json`，避免浏览器把跨站 `text/plain` simple request 当成 localhost 管理调用。准备接入公网时仍必须使用 HTTPS reverse proxy、host firewall、限流和独立部署隔离。
+1. 官方 ChatGPT OAuth；
+2. 第三方 New API credential；
+3. Web 控制面密码；
+4. Model Capability Registry；
+5. Worker / Verifier 执行权限。
 
-## English overview
-
-The project separates official ChatGPT authentication, the New API key, the Web password, and Worker execution authority. It never edits or copies auth.json; the New API key stays in an AES-256-GCM vault; Codex receives only a local gateway token; the Web service binds to loopback by default and production/local launchers require Web authentication by default; and Worker / Verifier execution is tracked through real task IDs and provider-isolated App Server threads.
-
-The Web password protects only the local control plane, so logging out of the Web session does not log ChatGPT out. MAIN is enforced at the server boundary. Worker cancellation and renewal are root-control fallbacks, while the Web page remains observational. JSON request bodies must use `application/json` or `application/*+json`, preventing a browser cross-site `text/plain` simple request from being treated as a localhost management call. A public deployment still requires an HTTPS reverse proxy, host firewall, rate limiting, and independent service isolation.
+项目不修改或复制 `auth.json`；New API key 只进入本地 AES-256-GCM vault；Codex 只拿到独立 gateway token；Web 默认 loopback 且生产启动默认要求认证。
 
 ## Credential separation
 
-- The built-in Codex `openai` provider remains owned by Codex and may continue using the user's ChatGPT OAuth/account state.
-- This project does not write `auth.json`, keyring records, `chatgpt_base_url`, or built-in provider definitions.
-- The New API key is encrypted at rest with AES-256-GCM using a separate random 32-byte local key stored mode `0600`.
-- Codex never needs the New API key. The namespaced `codex_worker_gateway` provider authenticates to the local gateway with a distinct random bearer token stored mode `0600` and resolved through command-backed provider auth.
-- Provider selection is per Codex execution thread. Switching a Worker from official to third-party does not require changing the ChatGPT login.
-- Web credential replacement uses collision-resistant temporary files, file fsync, atomic rename, directory fsync, and mode `0600`; password rotation invalidates all in-memory Web sessions.
+- Built-in `openai` provider 和 ChatGPT OAuth 归官方 Codex 所有。
+- 项目不写 `auth.json`、不改 built-in provider、不开启伪造的 ChatGPT base URL。
+- New API key 使用独立随机 32-byte key 的 AES-256-GCM 加密，相关 key material mode `0600`。
+- `codex_worker_gateway` 使用独立本地 bearer token；Codex 无需读取第三方 API key。
+- Web password 只保护本地控制平面；logout 不会退出 ChatGPT OAuth。
+- 密码轮换会撤销既有 Web session。
+
+## OAuth -> Main authorization boundary
+
+Main provider 不是前端偏好，而是认证派生的安全边界。
+
+后端通过官方 App Server `account/read` 判断当前是否存在 ChatGPT OAuth：
+
+- `account.type == "chatgpt"`：Main provider 锁定为 `official`；路由保存和执行 API 都拒绝第三方 Main。
+- 无 OAuth：才允许 standalone Third Party Main。
+
+第三方 Main 永远使用显式 `thread/start(modelProvider="codex_worker_gateway")`，不会修改官方顶层 selector，也不会声称已经切换官方 ChatGPT root provider。
+
+## Model capability boundary
+
+模型 ID 和 reasoning effort 都必须来自当前 Model Capability Registry。
+
+Registry 的来源是：
+
+- `account/read`；
+- 官方 `model/list`；
+- 可选 `modelProvider/capabilities/read`；
+- 第三方 `/v1/models`。
+
+安全规则：
+
+- 目录不存在的模型不能靠手写 ID 绕过；
+- explicit reasoning 只允许模型明确声明的值；
+- 未声明 reasoning metadata 时只能 `Auto`；
+- 模型变化后旧 effort 不合法会回 Auto；
+- 后端在执行前再次验证，不信任浏览器状态。
+
+因此项目不会通过模型名 heuristic、固定全局列表或“可能支持”来扩大上游能力。
+
+## Mode / Hook boundary
+
+### OFFICIAL
+
+`OFFICIAL` 是插件 policy 休眠态。已经确认 state.mode 为 OFFICIAL 后：
+
+- 不施加项目自己的 tool deny；
+- 不要求 `:8788` 控制平面健康；
+- 不启动项目管理的 Worker；
+- 切入 OFFICIAL 时取消现有项目 Worker。
+
+这保证本地控制平面故障不能把 native Codex 一起锁死。
+
+### AUTO / DELEGATE / MAIN
+
+这些是项目控制态：
+
+- Hook 读取有效 state；
+- 通过 HMAC challenge-response 验证 loopback control-plane health；
+- state 缺失、格式错误、未知模式、健康证明失败或 Hook 异常时 fail closed；
+- `DELEGATE` root 只允许协调/delegation surface，body work 交给 Worker；
+- `MAIN` 禁止新 Worker / native subagent execution；
+- HTTP/MCP 再次验证 active mode，旧请求参数不能绕过新模式。
+
+`CWD_HOOK_REQUIRE_CONTROL_PLANE=0` 只用于测试，不应进入生产环境。
+
+## Worker execution boundary
+
+- Official -> Official 可以使用 native `cwd-worker` / `cwd-verifier`。
+- 任何涉及 third-party provider 的执行都使用显式 App Server thread。
+- Third-party Verifier 强制 `read-only` sandbox；native verifier Hook 也阻止常见 mutation/execution tools。
+- 自动 Worker 默认拒绝 `danger-full-access`；只有 operator 明确设置 `CWD_ALLOW_DANGER_FULL_ACCESS=1` 才开放。
+- `cwd` 必须真实存在且是目录；非法路径在 server trust boundary 拒绝。
+- Worker cancellation / extension 只针对 matching task ID，不停止主 Codex process。
+- Web UI 对任务控制保持只读；内部 MCP/root-control 才能 cancel/extend。
+
+## Worker lifecycle and isolation
+
+每个 provider-isolated Worker 有 `wrk_...` task ID、heartbeat、meaningful progress、event history、lease、review point 和 terminal state。
+
+App Server pool 只复用 idle client；并行 Worker 不共享同一个 active App Server process。一个任务的 cancel / timeout / lease extension 不能附着到另一个任务。
+
+标准任务总上限 60 分钟，quick 总上限 10 分钟。自动 supervisor：
+
+- 有近期实质进展 + healthy heartbeat：有限续期；
+- 已进入真实执行但短暂只有 heartbeat：最多一次 bounded grace；
+- heartbeat-only / stalled / unavailable / hard-cap reached：fail-closed cancel。
+
+所有自动决定都写入 task evidence 和脱敏 audit。
 
 ## Network boundary
 
-- The control plane binds to `127.0.0.1` by default.
-- Installed systemd user/root units, `npm start`, and `npm run start:local` set `CWD_REQUIRE_AUTH=1` by default. An operator may explicitly override the developer launchers, but the sealed production units remain fail-closed.
-- Before a Web password exists, protected `/api/*` management routes remain unavailable when authentication is required. The loopback password-setup route accepts only a JSON request body; browser cross-site simple form/`text/plain` requests are rejected as unsupported media types.
-- The Web control plane stores only a salted scrypt password hash in the project data directory, uses short-lived HttpOnly SameSite sessions, throttles repeated login failures, and supports password rotation.
-- The Web password protects the local control plane only. `POST /api/auth/logout` clears the control-plane session cookie; it does not log out ChatGPT, touch OAuth state, or change Codex's official provider.
-- The plugin's cross-provider MCP tool calls a token-authenticated internal loopback endpoint.
-- A non-loopback Web deployment must set `CWD_REQUIRE_AUTH=1`, provide a bootstrap `CWD_WEB_TOKEN` for first-time password setup/automation, and use a TLS reverse proxy plus host firewall restrictions. Set `CWD_COOKIE_SECURE=1` when TLS terminates in front of the service.
-- Do not expose the raw Node HTTP listener directly to the Internet; password protection is an application boundary, not a replacement for HTTPS, firewalling, rate limiting, or a reverse proxy.
-- Provider URLs reject embedded credentials and non-HTTP(S) schemes.
-- User-supplied `Authorization` headers are rejected; authorization is generated from the encrypted credential instead.
+- 默认绑定 `127.0.0.1`。
+- systemd user/root unit、`npm start`、`npm run start:local` 默认 `CWD_REQUIRE_AUTH=1`。
+- JSON 管理请求要求 `application/json` 或 `application/*+json`，避免浏览器 cross-site `text/plain` simple request 被当成 localhost 管理请求。
+- 非 loopback 部署必须使用 TLS reverse proxy、host firewall、rate limiting，并设置合适的 secure cookie 行为。
+- 不要把 raw Node listener 直接暴露公网。
+- Provider URL 只接受无内嵌 credential 的 HTTP(S)。
+- 用户自带 `Authorization` header 不能覆盖项目 credential boundary。
 
-## Execution boundary
+## Durable config and audit
 
-- Codex `PreToolUse` hooks are a policy guardrail, not an OS sandbox.
-- `DELEGATE` denies root body-work tools while permitting coordination/delegation surfaces.
-- `MAIN` denies new native or cross-provider workers and freezes native subagent tool execution.
-- The active Web mode is enforced again at the HTTP/MCP boundary; a request cannot pass a stale `DELEGATE` value to bypass `MAIN`.
-- Cross-provider verifier threads are created with the Codex `read-only` sandbox. The hook also denies common execution/mutation tools for native `cwd-verifier` agents.
-- Worker task snapshots are stored under the private data directory with mode `0600`; they contain status, model/provider, progress, IDs, events, and redacted structured errors, not the original task prompt.
-- Worker and Verifier cancellation is scoped to the matching task ID: only the token-authenticated internal MCP route used by the root control plane marks the task `cancelled` and terminates that task's App Server. The Web UI is read-only for task control. Cancellation is idempotent and cannot be used to stop the main Codex process.
-- A warm App Server process is reused only while idle. Simultaneous Worker operations never share one App Server process, so one operation's cancellation/overall timeout cannot terminate another operation and one Worker's lease extension cannot attach to another Worker's turn. If a caller bypasses the pool and creates multiple simultaneous turns on one client, timeout extension fails closed with an ambiguity error instead of guessing a target.
-- A `turn/completed` waiter registered before `turn/start` is explicitly removed if `turn/start` fails, so a failed start cannot leave a later orphan timeout rejection behind.
-- Worker lease renewal is supervisor-controlled by default: at `reviewDue`, the control plane renews when the task has recent meaningful lifecycle progress and a healthy heartbeat, and may grant one bounded grace review to work that has entered real execution but temporarily emits only heartbeats. It never exceeds the profile's per-renewal or hard total runtime cap; repeated heartbeat-only, stalled, unavailable, or exhausted work is cancelled fail-closed. Each decision is persisted with evidence and reason. Root-control `worker_extend` remains a token-authenticated fallback; the Web UI cannot extend or cancel a task.
-- Use Codex permissions/sandboxing and operating-system isolation for untrusted commands, secrets, and filesystem boundaries.
+- `config.toml` mutation 使用 owner-record lock；更新前重新读取，发现并发修改时以 `CODEX_CONFIG_CONCURRENT_MODIFICATION` fail closed，而不是覆盖新配置。
+- state、vault、gateway token、Web credential、Worker snapshot 使用原子发布和私有权限。
+- audit append/rotation 跨 StateStore instance/process 串行化，并对 active file / directory fsync。
 
-## Configuration and audit durability
+## Official picker boundary
 
-- Project-controlled `config.toml` mutations are serialized with the same owner-record file lock used for durable state. Immediately before replacement, the manager rereads `config.toml`; if it no longer equals the snapshot used to compute the mutation, the operation fails with `CODEX_CONFIG_CONCURRENT_MODIFICATION` instead of overwriting the newer configuration.
-- Configuration, ownership records, role files, state, vault key material, gateway tokens, Web credential data, and Worker terminal snapshots use atomic publication patterns appropriate to their ownership boundary.
-- Audit append/rotation is serialized across StateStore instances/processes, fsyncs the active audit file, and fsyncs the containing directory after rotation/append. An accidentally duplicated control-plane process therefore cannot race audit file rotation.
+同一 Codex 安装可以同时保留官方 ChatGPT provider 和 namespaced third-party provider，但这不表示第三方 ID 已合法进入官方 signed-in picker。
 
-## Plugin trust
+当前官方 model surface 若没有 provider-correct binding，项目不会用 catalog-only 注入或修改官方 selector 来制造“原生第三方模型”的假象。
 
-Codex must trust/install the plugin through its normal plugin/hook mechanisms before hook policy applies. This project does not bypass Codex's plugin trust model or approval surfaces.
+---
 
-## What coexistence does and does not mean
+## English summary
 
-Coexistence means the same Codex installation can keep the official ChatGPT account/provider configured while separately routing selected threads through `codex_worker_gateway`. It does not mean a single native `spawn_agent` child can currently change model provider: upstream Codex inherits the parent's provider for native children, so cross-provider work intentionally uses a provider-specific App Server thread and is reported as such.
+Version 3.2 separates official ChatGPT OAuth, encrypted third-party credentials, Web authentication, model capability authority, and Worker execution authority.
 
-It also does not mean that New API IDs appear in the official signed-in `openai` picker. The local UI and the namespaced provider have their own third-party catalog. The current official `model/list` entries do not carry the provider binding required to make a visible third-party ID route safely, so a catalog-only injection is not treated as coexistence success.
+ChatGPT OAuth is read from official `account/read` and server-side locks Main to Official while active. Without OAuth, a third-party Main is allowed only as an explicit standalone App Server thread. Model IDs and explicit reasoning efforts must exist in the current capability registry; no heuristic reasoning list is trusted.
+
+`OFFICIAL` is deliberately dormant and independent of control-plane health so a dead delegation service cannot brick native Codex. AUTO / DELEGATE / MAIN remain authenticated, fail-closed project-controlled modes. Third-party execution is provider-isolated, Verifier is read-only, danger-full-access is opt-in, and task cancellation/extension is scoped to a single persistent Worker task.
