@@ -9,7 +9,7 @@ const DEFAULT_POOL_IDLE_MS = 5 * 60 * 1000;
 const STARTUP_RETRY_DELAY_MS = 200;
 const MAX_MODEL_PAGES = 100;
 const MAX_STDOUT_BUFFER_BYTES = 4 * 1024 * 1024;
-const REASONING_EFFORTS = new Set(['auto', 'none', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+const MAX_REASONING_EFFORT_LENGTH = 128;
 const SANDBOX_ALIASES = new Map([
   ['read-only', 'read-only'], ['readonly', 'read-only'], ['readOnly', 'read-only'],
   ['workspace-write', 'workspace-write'], ['workspacewrite', 'workspace-write'], ['workspaceWrite', 'workspace-write'],
@@ -20,6 +20,15 @@ export function normalizeSandboxMode(value = 'workspace-write') {
   const normalized = SANDBOX_ALIASES.get(String(value));
   if (!normalized) throw new Error(`Unsupported Codex sandbox mode: ${value}`);
   return normalized;
+}
+
+export function normalizeReasoningEffort(value = 'auto') {
+  if (value === undefined || value === null || value === '') return 'auto';
+  const effort = String(value).trim();
+  if (!effort || effort.length > MAX_REASONING_EFFORT_LENGTH || /[\0\r\n]/.test(effort)) {
+    throw new Error(`invalid reasoning effort; expected a non-empty value no longer than ${MAX_REASONING_EFFORT_LENGTH} characters`);
+  }
+  return effort;
 }
 
 function jsonText(value, maxLength = 8000) {
@@ -102,16 +111,13 @@ export class CodexAppServerClient {
       this.#failAll(error);
     });
     child.on('exit', (code, signal) => {
-      // A controlled close/abort clears this.process before signalling the child.
-      // Therefore an exit that still owns this.process is always unexpected,
-      // including a clean code=0 exit while an RPC lifecycle is active.
       if (this.process !== child) return;
       this.process = null;
       const error = new Error(`codex app-server exited with code ${code ?? 'null'}${signal ? ` (${signal})` : ''}: ${this.stderr.trim()}`);
       error.code = 'CODEX_APP_SERVER_EXITED'; error.signal = signal || null; this.#failAll(error);
     });
     try {
-      await this.request('initialize', { clientInfo: { name: 'codex_worker_delegation', title: 'Codex Worker Delegation', version: '3.1.1' }, capabilities: { experimentalApi: true } });
+      await this.request('initialize', { clientInfo: { name: 'codex_worker_delegation', title: 'Codex Worker Delegation', version: '3.2.0' }, capabilities: { experimentalApi: true } });
       this.notify('initialized', {}); return this;
     } catch (error) {
       await this.#terminate(error).catch(() => {});
@@ -192,6 +198,7 @@ export class CodexAppServerClient {
 
   subscribeNotifications(listener) { if (typeof listener !== 'function') return () => {}; this.notificationListeners.add(listener); return () => this.notificationListeners.delete(listener); }
   async getAccount({ refreshToken = false } = {}) { return this.request('account/read', { refreshToken }); }
+  async getModelProviderCapabilities() { return this.request('modelProvider/capabilities/read', {}); }
 
   async listModels({ includeHidden = false } = {}) {
     const all = []; let cursor = null; const seen = new Set(); let pages = 0;
@@ -205,7 +212,10 @@ export class CodexAppServerClient {
   }
 
   async runThread({ model, modelProvider, prompt, cwd = process.cwd(), sandbox = 'workspace-write', developerInstructions, effort = 'auto', timeoutMs = 180000, onProgress }) {
-    if (!model) throw new Error('model is required'); if (!modelProvider) throw new Error('modelProvider is required'); if (!prompt?.trim()) throw new Error('prompt is required'); if (!REASONING_EFFORTS.has(effort)) throw new Error(`unsupported reasoning effort: ${effort}`);
+    if (!model) throw new Error('model is required');
+    if (!modelProvider) throw new Error('modelProvider is required');
+    if (!prompt?.trim()) throw new Error('prompt is required');
+    const normalizedEffort = normalizeReasoningEffort(effort);
     this.turnStartsPending += 1;
     let started;
     try {
@@ -223,13 +233,13 @@ export class CodexAppServerClient {
       completion = this.#notificationWaiter('turn/completed', (params) => params?.threadId === threadId, timeoutMs);
       let turnStarted;
       try {
-        turnStarted = await this.request('turn/start', { threadId, input: [{ type: 'text', text: String(prompt), text_elements: [] }], ...(effort !== 'auto' ? { effort } : {}) });
+        turnStarted = await this.request('turn/start', { threadId, input: [{ type: 'text', text: String(prompt), text_elements: [] }], ...(normalizedEffort !== 'auto' ? { effort: normalizedEffort } : {}) });
       } catch (error) {
         completion.cancel(); completion = null; throw error;
       }
       emit({ method: 'turn/started', params: { threadId, turn: turnStarted?.turn || null } });
       const params = await completion.promise; const items = params?.turn?.items || []; const messages = items.filter((item) => item?.type === 'agentMessage' && typeof item.text === 'string').map((item) => item.text);
-      return { threadId, model: started?.model || model, modelProvider: started?.modelProvider || modelProvider, effort, status: params?.turn?.status || 'completed', output: messages.at(-1) || '', messages, turn: params?.turn || null };
+      return { threadId, model: started?.model || model, modelProvider: started?.modelProvider || modelProvider, effort: normalizedEffort, status: params?.turn?.status || 'completed', output: messages.at(-1) || '', messages, turn: params?.turn || null };
     } finally { completion?.cancel(); unsubscribe(); }
   }
 
