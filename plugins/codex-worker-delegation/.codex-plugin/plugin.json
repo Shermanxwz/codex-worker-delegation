@@ -32,8 +32,8 @@
     ],
     "defaultPrompt": [
       "Read delegation_status before substantial work.",
-      "If mode is OFFICIAL, follow native Codex behavior and do not force plugin-managed delegation.",
-      "Use native subagents only for built-in OpenAI routes. Use delegate_worker for every configured route involving a third-party provider."
+      "In OFFICIAL mode, follow native Codex behavior and do not force plugin-managed delegation.",
+      "Use native subagents for official routes; use delegate_worker whenever a configured route is third-party."
     ]
   }
 }
