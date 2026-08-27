@@ -2,147 +2,208 @@
 
 ## 中文概览
 
-生产封存不是一句“能启动”或“测试通过”，而是对一台真实登录的 ChatGPT Linux / Codex 设备执行的分层验收。它分别检查项目控制的核心运行链路、官方 Desktop provider binding，以及最终是否满足归档条件。
+Codex Worker Delegation 3.2 的“封存”分成两个不同层次：
 
-真实共存证明、真实第三方 Worker、完整网关链路可以通过，而严格封存仍可能失败。当前官方 model/list 没有足够的第三方 provider binding，或者 New API 目录中有模型返回上游错误时，报告必须保留 NOT_SEALED / NOT_ARCHIVE_READY，而不能隐藏失败或修改官方 selector。
+1. **项目可控边界封存**：源码、静态契约、Node 20/22/24、并行压力、当前 Codex、固定与最新 ChatGPT Linux 包、官方 plugin manager / App Server E2E、user/root 安装升级回滚卸载等，可以由 Hosted CI 重复证明。
+2. **真实账号归档封存**：`CORE_SEALED`、`DESKTOP_NATIVE_SEALED` 与最终 `ARCHIVE_READY` 必须在同一台真实 signed-in Linux 安装上运行，不能由 CI 伪造私人 ChatGPT OAuth、生产 New API credential 或官方 Desktop provider binding。
 
-## English overview
+因此 Hosted CI 全绿是必要条件，但不是 `ARCHIVE_READY` 的替代品。
 
-Production sealing is not a claim that the service merely starts or that unit tests pass. It is a layered acceptance run on a real signed-in ChatGPT Linux / Codex installation. The layers distinguish the project-controlled runtime, provider-correct official Desktop binding, and final archival readiness.
+## 3.2 必须保持的运行不变量
 
-Real coexistence, a real third-party Worker, and the complete gateway path may pass while the strict seal remains negative. When the current official model/list surface lacks sufficient third-party provider binding, or a model in the New API catalog returns an upstream error, the report must remain NOT_SEALED / NOT_ARCHIVE_READY. Failures are never hidden and official selectors are never rewritten to manufacture a pass.
+### OFFICIAL 是原生 Codex 边界
 
-This document defines the release boundary for `codex-worker-delegation` on the official ChatGPT Linux / bundled Codex runtime. The project does not use “perfect” to mean “no future upstream change can ever happen”. A sealed release means that every project-controlled boundary is reproducible, reversible, fail-closed, and proven against a recorded official Linux package; repository archival additionally requires the current official Desktop model surface to expose provider-correct third-party models rather than a catalog-only fake merge.
+`OFFICIAL` 模式下本插件 policy 休眠：
+
+- 不覆盖官方模型、reasoning、工具或 multi-agent 默认行为；
+- 不启动项目管理的 Worker；
+- 切换进入 OFFICIAL 会取消项目当前管理的 Worker；
+- **本地 `:8788` 控制平面不可用时，也不能因为本插件 Hook 而阻断 native Codex。**
+
+AUTO / DELEGATE / MAIN 才是项目控制态，它们继续要求经过认证的 loopback control-plane health proof，并在 state / Hook / control-plane 异常时 fail closed。
+
+### OAuth 决定 Main provider 边界
+
+Main provider 的合法性由官方 App Server `account/read` 派生：
+
+- `account.type == "chatgpt"`：Main 必须为 Official，且后端拒绝第三方 Main；
+- 未观察到 ChatGPT OAuth：才允许 standalone Third Party Main；
+- standalone Third Party Main 必须通过显式 `thread/start(modelProvider="codex_worker_gateway")` 运行，不能修改或伪装官方 ChatGPT root provider。
+
+### Model Capability Registry 决定模型与 Reasoning 边界
+
+Registry 由以下真实来源构建：
+
+- `account/read`；
+- 官方 `model/list`；
+- 可选 `modelProvider/capabilities/read`；
+- 第三方 `/v1/models`。
+
+封存规则：
+
+- 当前 Registry 不存在的模型 ID 不得执行；
+- explicit reasoning 只允许该模型明确声明的值；
+- 未声明 reasoning metadata 时只能使用 `Auto`；
+- 模型切换后旧 effort 不合法必须回到 Auto；
+- 服务端在保存路由和执行前重复验证，不能只信任 UI。
+
+项目不得通过固定全局 reasoning 列表、模型名 heuristic 或隐藏上游 catalog 错误来制造通过结果。
 
 ## Seal levels
 
 ### `CORE_SEALED`
 
-The project-controlled runtime is accepted only when the target signed-in Linux installation proves all of the following in one production-seal run:
+目标 signed-in Linux 安装必须在同一次生产验收中证明项目控制的核心链路：
 
-- the official ChatGPT Linux bundled Codex/current Codex runtime executes;
-- repository static contracts and the complete test suite pass;
-- installation goes through the official Codex plugin manager and the plugin is reported installed;
-- a New API credential is configured in the encrypted local vault;
-- the loopback control plane is healthy;
-- the namespaced `codex_worker_gateway` provider is installed without changing the official top-level model/provider selectors;
-- `account/read` proves the official account remains a ChatGPT account;
-- third-party model discovery works;
-- at least the selected real Worker route is usable and the real third-party Worker finishes through the official Codex App Server;
-- the real official/New API coexistence proof succeeds before and after the third-party turn;
-- `auth.json` remains byte-for-byte unchanged;
-- the official top-level model selectors remain unchanged.
+- 当前目标 Codex runtime 可执行；
+- repository static contracts 与完整测试通过；
+- 官方 Codex plugin manager 安装成功，插件 payload 与受信 source 一致；
+- loopback service、Web auth、HMAC hook health（项目控制模式）正常；
+- New API credential 已进入本地加密 vault；
+- `codex_worker_gateway` namespaced provider 已安装；
+- `auth.json` 与官方顶层 selector 不被项目覆盖；
+- `account/read` 返回真实官方账号状态；
+- 当前 Model Capability Registry 可构建；
+- OAuth 活跃时 Main provider lock 生效；无 OAuth 时 third-party Main 只能以 standalone provenance 执行；
+- 所选真实 Worker / Verifier route 满足 Registry 与 sandbox policy；
+- 至少要求的真实第三方 Worker 路径通过官方 Codex App Server 完成；
+- 官方账号前后 `account/read` 与第三方 thread 的真实 coexistence proof 通过；
+- Worker lifecycle / cancellation / timeout / lease 行为满足 fail-closed 边界；
+- 安装记录、active release tree、plugin cache 与部署权限完整可验证。
 
-Complete connectivity of every model returned by a third-party `/v1/models` catalog is reported separately as `FULL_CATALOG_SEALED` because providers can legitimately advertise models that are unavailable to a particular key, region, quota, or endpoint. A failed catalog member is never hidden; it is an explicit `CATALOG_ADVISORY`.
+第三方 `/v1/models` 返回的所有模型是否都对当前 key/region/quota 可用，单独报告为 catalog 状态。某个 catalog member 不可用不能被隐藏，但也不能和项目控制链路故障混为一谈。
 
 ### `DESKTOP_NATIVE_SEALED`
 
-This is stricter than core routing. It additionally requires the official Codex `model/list` / Desktop model surface to expose the discovered New API-only models with a provider-correct route. The project does not count a third-party model ID that is merely visible but still resolves through the built-in `openai` provider as successful integration.
+这是比显式 App Server routing 更严格的官方 Desktop 能力门槛。
 
-As long as the official model entries do not provide enough provider binding to guarantee the selected third-party ID routes through `codex_worker_gateway`, this status remains `DESKTOP_NATIVE_NOT_SEALED` even though explicit App Server `thread/start(modelProvider=...)` routing works.
+它要求官方 Codex / Desktop model surface 对第三方模型提供 **provider-correct binding**。仅仅把第三方 ID 显示在某个 catalog 中、但新 thread 仍然解析到 built-in `openai` provider，不算通过。
+
+如果当前官方 surface 不提供足够的 provider binding，本项目仍可做到生产级 explicit-provider routing，但状态必须保持：
+
+```text
+CORE_SEALED
+DESKTOP_NATIVE_NOT_SEALED
+archiveReady = false
+```
+
+项目不会为了拿到绿色归档报告而修改官方顶层 provider 或伪造官方 picker。
 
 ### `ARCHIVE_READY`
 
-`npm run seal:archive` is the final fail-closed gate. It requires, on the same target installation:
+`npm run seal:archive` 是最终归档门槛。它要求在同一台目标 signed-in Linux 安装上同时满足：
 
-1. `npm run validate:deployment` passes;
-2. `CORE_SEALED` passes;
-3. `DESKTOP_NATIVE_SEALED` passes;
-4. the release report has `archiveReady: true`.
+1. `npm run validate:deployment` 通过；
+2. `CORE_SEALED`；
+3. `DESKTOP_NATIVE_SEALED`；
+4. release report 的 `archiveReady: true`。
 
-If any of these conditions is missing, the command exits non-zero and reports `NOT_ARCHIVE_READY`. Do not archive the repository merely because hosted CI is green or because `CORE_SEALED` is green.
+任一条件缺失都必须返回 `NOT_ARCHIVE_READY` 且非零退出。
+
+**Hosted CI 全绿本身永远不能直接产生 `ARCHIVE_READY`。**
+
+## Hosted CI seal
+
+PR / main CI 必须至少覆盖以下项目可控边界：
+
+- `npm run check`；
+- Node 20 / 22 / 24 deterministic test suite；
+- parallel process-isolation stress suite；
+- 当前官方 `@openai/codex` smoke、App Server schema、官方 plugin manager + explicit-provider cross-provider E2E；
+- immutable ChatGPT Linux baseline `.deb`、其 bundled Codex 与真实 App Server E2E；
+- current latest ChatGPT Linux `.deb` forward-compatibility canary；
+- user-scope install -> upgrade -> service -> rollback -> validate -> uninstall；
+- root/system-scope lifecycle contract；
+- `auth.json` preservation、plugin payload integrity、systemd hardening 与可逆卸载。
+
+CI 不得通过降低 OAuth Main lock、跳过 Registry 校验、放宽 unsupported reasoning、禁用 Hook security 或修改真实 connectivity 结果来换取绿色。
 
 ## Reproducible official Linux baseline
 
-`deploy/chatgpt-linux-baseline.json` is the immutable release evidence. It records:
+`deploy/chatgpt-linux-baseline.json` 记录不可变证据：
 
-- exact ChatGPT Linux package version;
-- exact package SHA-256 and size;
-- immutable versioned package URL;
-- bundled Codex executable path and version;
-- the acceptance claims already demonstrated by CI.
+- exact ChatGPT Linux package version；
+- package SHA-256 / size；
+- immutable versioned URL；
+- bundled Codex executable path / version；
+- 已验证的 App Server / plugin-manager acceptance claims。
 
-CI has two separate jobs:
+Baseline job 必须重新下载并校验 immutable package，然后执行 bundled Codex、生成 App Server schema、通过官方 plugin manager 安装插件并完成 explicit-provider E2E。
 
-- **ChatGPT Linux baseline** downloads the versioned package, verifies the SHA-256 and package version, executes the bundled Codex, generates the live App Server schema, installs this plugin through the bundled official plugin manager, and completes a real explicit-provider cross-provider E2E.
-- **ChatGPT Linux latest** downloads the mutable `latest` package and repeats the real E2E as a forward-compatibility canary.
-
-Never replace the baseline merely because `latest` moved. Promote a new baseline only after the new package independently passes the full baseline job; preserve the old baseline evidence in git history.
+Latest job 使用 mutable latest package 作为 forward-compatibility canary。latest 变化不能自动覆盖 baseline；只有独立验收通过后才可更新 recorded baseline。
 
 ## Production installation
 
-Run installation as the same non-root desktop user that owns the ChatGPT/Codex login:
-
-```bash
-npm run install:linux
-```
-
-The installer:
-
-1. validates Node.js 20+ and discovers the official Linux bundled Codex/current Codex;
-2. runs `npm run check` and the complete test suite before touching the installed release;
-3. installs a versioned release under the user data directory;
-4. keeps stable `current` and `previous` trees for deterministic plugin-manager source paths and rollback;
-5. renders a systemd **user** service for the actual installation root;
-6. pins the service to the validated Node executable through `runtime/node`;
-7. starts the loopback control plane;
-8. installs the plugin through the official Codex plugin manager;
-9. installs only the namespaced provider and worker/verifier role files;
-10. compares the SHA-256 of `auth.json` before and after installation;
-11. records the active release, Codex version, Node version, and auth snapshot in `install-record.json` mode `0600`.
-
-An install failure restores the previous release instead of leaving a half-upgraded `current` tree.
-
-For a system-scope deployment installed by root, pass the non-root desktop identity explicitly with `CWD_SYSTEMD_SERVICE_USER` and `CWD_SYSTEMD_SERVICE_GROUP`. Every plugin/configuration write in install, rollback, recovery, and uninstall is executed as that identity with its passwd-resolved `HOME`. Direct root writes into a `/home/*` `CODEX_HOME` are rejected, and deployment validation checks ownership of the managed Codex files.
-
-## Systemd boundary
-
-The production service is a user unit rather than a root service because the control plane must deliberately share the same Unix identity and `~/.codex` account state as the signed-in ChatGPT desktop user.
-
-It binds only to loopback by default and includes `NoNewPrivileges`, `PrivateTmp`, kernel/control-group hardening, capability removal, and address-family restrictions. `ProtectSystem=full` is deliberate: `ProtectSystem=strict` would also make ordinary user workspace paths read-only to the service and therefore break legitimate Codex `workspace-write` Worker execution. OS-level Codex sandbox and workspace permissions remain the execution boundary for delegated code.
-
-## Fail-closed policy
-
-The plugin `PreToolUse` hook denies tool execution when:
-
-- the delegation state file is missing;
-- the state is malformed;
-- the mode is unknown;
-- the loopback control plane health check fails or times out;
-- the policy hook itself throws;
-- the shell launcher cannot find a Node.js 20+ runtime.
-
-A test-only `CWD_HOOK_REQUIRE_CONTROL_PLANE=0` escape hatch exists so unit tests can isolate policy semantics. It must not be configured in production.
-
-Terminal Worker state is not exposed to callers until its matching task snapshot has completed the queued atomic disk write. Therefore a caller cannot receive `completed` while crash-recovery storage still contains `running`.
-
-## Upgrade and rollback
-
-Upgrade by running the same installer from the new source tree:
+普通桌面部署应由拥有 ChatGPT / Codex 登录状态的同一 Unix identity 执行：
 
 ```bash
 npm run install:linux
 npm run validate:deployment
 ```
 
-Rollback swaps the complete `current` and `previous` trees, re-renders the systemd unit, refreshes the Codex plugin from the restored stable source tree, verifies `auth.json`, updates the install record, and leaves the former release available for a reverse rollback:
+安装器必须：
+
+1. 验证 Node 20+ 与目标 Codex binary；
+2. 在写入安装树前运行静态检查与完整测试；
+3. 安装 versioned release，并维护 `current` / `previous`；
+4. 渲染对应 user/system systemd unit；
+5. pin 经验证的 Node runtime；
+6. 默认 loopback + Web auth；
+7. 通过官方 Codex plugin manager 安装插件；
+8. 只添加 namespaced provider / managed role；
+9. 比较安装前后 `auth.json` SHA-256；
+10. 记录 release / Codex / Node / auth evidence；
+11. 安装失败时恢复前一个完整 release，而不是保留半升级状态。
+
+System scope 若由 root 安装到非 root desktop identity，所有 Codex config / plugin writes 必须以目标 service identity 执行。直接 root 写入普通用户 `CODEX_HOME` 应被拒绝。
+
+## Fail-closed policy
+
+### 项目控制模式：AUTO / DELEGATE / MAIN
+
+Hook 在以下情况 fail closed：
+
+- delegation state 缺失；
+- state malformed / unknown mode；
+- authenticated control-plane health challenge 失败或超时；
+- Hook 本身异常；
+- launcher 找不到满足要求的 Node runtime。
+
+### OFFICIAL
+
+OFFICIAL 的目标相反：项目 policy 必须退出路径，不再要求控制面 liveness。只要 state 能被可靠识别为 `OFFICIAL`，本插件不能因为 `:8788` 不可用而 deny native Codex tool use。
+
+这不是放宽 AUTO / WORKER / MAIN，而是确保“官方默认”真正由官方 runtime 负责。
+
+## Upgrade / rollback / uninstall
+
+升级：
+
+```bash
+npm run install:linux
+npm run validate:deployment
+```
+
+回滚：
 
 ```bash
 npm run rollback:linux
 npm run validate:deployment
 ```
 
-## Uninstall
+回滚必须恢复完整 previous tree、重新渲染 service unit、刷新官方 plugin-manager source、验证 auth preservation，并保留 former release 用于反向 rollback。
+
+卸载：
 
 ```bash
 npm run uninstall:linux
 ```
 
-Uninstall removes only the managed Codex provider/roles, plugin registration, service, and installed code. It verifies that `auth.json` is unchanged. Encrypted provider/audit data is retained by default for recovery; set `CWD_PURGE_DATA=1` only when intentional data destruction is desired.
+卸载只移除项目管理的 provider / role / plugin registration / service / installed code。默认保留加密 provider data 与 audit 以便恢复；仅在明确设置 `CWD_PURGE_DATA=1` 时销毁项目数据。
 
-## Target-machine acceptance sequence
+## Target-machine final acceptance
 
-After the Web UI has a real New API provider and Worker route configured on the signed-in Linux account, run:
+在真实 signed-in Linux 设备配置实际 New API credential 与目标路由后执行：
 
 ```bash
 npm run validate:deployment
@@ -151,12 +212,16 @@ npm run seal:release
 npm run seal:archive
 ```
 
-Interpret the result literally:
+结果必须按字面解释：
 
-- `CORE_NOT_SEALED`: a project-controlled requirement is still failing; fix it before release.
-- `CORE_SEALED` + `DESKTOP_NATIVE_NOT_SEALED`: runtime integration is production-grade, but the official Desktop picker is not yet provider-correct; do not archive.
-- `CORE_SEALED` + `DESKTOP_NATIVE_SEALED` + `ARCHIVE_READY`: the repository has reached the defined archival gate for that exact signed-in Linux environment and recorded baseline.
+- `CORE_NOT_SEALED`：项目控制边界仍有失败，不能发布；
+- `CORE_SEALED + DESKTOP_NATIVE_NOT_SEALED`：explicit-provider runtime 可生产使用，但官方 Desktop picker 还没有 provider-correct third-party binding，不能归档；
+- `CORE_SEALED + DESKTOP_NATIVE_SEALED + ARCHIVE_READY`：该 exact signed-in host / runtime / provider environment 达到定义的最终归档门槛。
 
-## What hosted CI cannot impersonate
+## English summary
 
-Hosted CI can prove the official `.deb`, bundled Codex executable, official plugin manager, App Server schema, gateway translation, worker lifecycle, installation/upgrade/rollback/uninstall, permissions, and an isolated real Codex E2E. It intentionally cannot copy a user's private ChatGPT OAuth state or production New API secret. `account/read` on the real signed-in desktop account and the real provider credential are therefore target-machine acceptance evidence and are never replaced with CI secrets or fabricated fixtures.
+Version 3.2 separates hosted source/runtime sealing from real-account archival acceptance. Hosted CI must prove every project-controlled boundary, including Node 20/22/24, parallel stress, current Codex, immutable/latest ChatGPT Linux bundles, plugin-manager/App-Server E2E, and user/root deployment lifecycle contracts.
+
+`OFFICIAL` is a dormant-plugin mode and must remain usable even if the delegation control plane is down. AUTO / DELEGATE / MAIN remain fail-closed project-controlled modes. ChatGPT OAuth server-side locks Main to Official while active. Model and Reasoning validity comes from the live Model Capability Registry and must never be guessed.
+
+Final `ARCHIVE_READY` remains a target-machine gate: it requires deployment validation, `CORE_SEALED`, `DESKTOP_NATIVE_SEALED`, and `archiveReady=true` on the same real signed-in Linux installation. Hosted CI cannot fabricate private OAuth, production provider credentials, or official Desktop provider binding.
