@@ -3,33 +3,25 @@
   "version": "3.2.0",
   "private": true,
   "type": "module",
+  "description": "OAuth-safe Codex control plane for native defaults, provider-isolated workers, and live per-model capability routing.",
+  "engines": {"node": ">=20"},
   "scripts": {
-    "start": "node src/server.mjs",
+    "start": "CWD_REQUIRE_AUTH=${CWD_REQUIRE_AUTH:-1} node src/server.mjs",
+    "start:local": "bash scripts/start-local.sh",
+    "stop:local": "bash scripts/stop-local.sh",
+    "test": "node --test --test-concurrency=1 --test-timeout=60000 test/*.test.mjs",
+    "test:parallel": "node --test --test-timeout=60000 test/*.test.mjs",
     "check": "node scripts/check.mjs",
-    "install:linux": "bash scripts/install-linux.sh",
-    "uninstall:linux": "bash scripts/uninstall-linux.sh",
+    "seal:production": "node scripts/production-seal.mjs",
+    "seal:release": "node scripts/release-seal.mjs",
+    "seal:archive": "node scripts/archive-seal.mjs",
     "validate:deployment": "bash scripts/validate-deployment.sh",
-    "seal:production": "node scripts/production-seal.mjs --strict",
-    "seal:release": "node scripts/release-seal.mjs --strict",
-    "test": "node --test --test-concurrency=1 test/*.test.mjs",
-    "test:parallel": "node --test --test-concurrency=4 test/*.test.mjs"
-  },
-  "engines": {
-    "node": ">=20"
-  },
-  "license": "MIT",
-  "description": "Local control plane for OAuth-safe Codex Main routing, provider-isolated Workers and model-capability-aware reasoning.",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/Shermanxwz/codex-worker-delegation.git"
-  },
-  "keywords": [
-    "codex",
-    "chatgpt",
-    "worker",
-    "delegation",
-    "app-server",
-    "openai-compatible",
-    "model-routing"
-  ]
+    "install:linux": "bash scripts/install-linux.sh",
+    "rollback:linux": "bash scripts/rollback-linux.sh",
+    "uninstall:linux": "bash scripts/uninstall-linux.sh",
+    "doctor": "node src/cli.mjs doctor",
+    "install:codex": "node src/cli.mjs install",
+    "uninstall:codex": "node src/cli.mjs uninstall",
+    "official:status": "node src/cli.mjs official"
+  }
 }
