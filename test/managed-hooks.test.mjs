@@ -22,6 +22,39 @@ function run(command, args, options = {}) {
   });
 }
 
+const PRIVILEGED_ENV_KEYS = [
+  'CWD_INSTALL_ROOT',
+  'CWD_DATA_DIR',
+  'CWD_MANAGED_HOOKS_DIR',
+  'CWD_MANAGED_NODE_BIN',
+  'CWD_MANAGED_HOOKS_ADOPT',
+  'CWD_PORT',
+];
+
+function runAsRoot(command, args, options = {}) {
+  if (typeof process.getuid !== 'function' || process.getuid() === 0) {
+    return run(command, args, options);
+  }
+
+  const env = options.env ?? process.env;
+  const forwardedEnv = PRIVILEGED_ENV_KEYS.flatMap((key) => (
+    env[key] === undefined ? [] : [`${key}=${env[key]}`]
+  ));
+  return run('sudo', ['-n', '/usr/bin/env', ...forwardedEnv, command, ...args], {
+    ...options,
+    env: process.env,
+  });
+}
+
+async function removeTempDir(dir) {
+  if (typeof process.getuid !== 'function' || process.getuid() === 0) {
+    await fs.rm(dir, { recursive: true, force: true });
+    return;
+  }
+  const result = await run('sudo', ['-n', 'rm', '-rf', '--', dir]);
+  if (result.status !== 0) throw new Error(result.stderr || `failed to remove ${dir}`);
+}
+
 function envFor(values) {
   return { ...process.env, ...values };
 }
@@ -55,7 +88,7 @@ test('managed hook renderer produces host-specific files without unresolved mark
 
 test('managed hook install, validation, idempotent reinstall, and marker-safe uninstall work in a temporary root', async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cwd-managed-hooks-install-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  t.after(() => removeTempDir(dir));
   const installRoot = path.join(dir, 'release-root');
   const dataDir = path.join(dir, 'worker-data');
   const managedDir = path.join(dir, 'etc-codex');
@@ -69,14 +102,14 @@ test('managed hook install, validation, idempotent reinstall, and marker-safe un
     CWD_MANAGED_HOOKS_DIR: managedDir,
     CWD_MANAGED_NODE_BIN: process.execPath,
   });
-  let result = await run('bash', ['scripts/install-managed-hooks.sh'], { env });
+  let result = await runAsRoot('bash', ['scripts/install-managed-hooks.sh'], { env });
   assert.equal(result.status, 0, result.stderr);
-  result = await run('bash', ['scripts/validate-managed-hooks.sh'], { env });
+  result = await runAsRoot('bash', ['scripts/validate-managed-hooks.sh'], { env });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /CWD_MANAGED_HOOKS_VALID/);
-  result = await run('bash', ['scripts/install-managed-hooks.sh'], { env });
+  result = await runAsRoot('bash', ['scripts/install-managed-hooks.sh'], { env });
   assert.equal(result.status, 0, result.stderr);
-  result = await run('bash', ['scripts/uninstall-managed-hooks.sh'], { env });
+  result = await runAsRoot('bash', ['scripts/uninstall-managed-hooks.sh'], { env });
   assert.equal(result.status, 0, result.stderr);
   for (const file of ['requirements.toml', 'worker-delegation-policy.sh', 'worker-delegation-policy.mjs', '.codex-worker-delegation-managed']) {
     await assert.rejects(fs.stat(path.join(managedDir, file)), { code: 'ENOENT' });
@@ -85,7 +118,7 @@ test('managed hook install, validation, idempotent reinstall, and marker-safe un
 
 test('managed hook installer refuses to overwrite an unmarked requirements file', async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cwd-managed-hooks-adopt-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  t.after(() => removeTempDir(dir));
   const installRoot = path.join(dir, 'release-root');
   const dataDir = path.join(dir, 'worker-data');
   const managedDir = path.join(dir, 'etc-codex');
@@ -95,7 +128,7 @@ test('managed hook installer refuses to overwrite an unmarked requirements file'
   await fs.mkdir(dataDir, { recursive: true });
   await fs.mkdir(managedDir, { recursive: true });
   await fs.writeFile(path.join(managedDir, 'requirements.toml'), 'external-managed-policy\n');
-  let result = await run('bash', ['scripts/install-managed-hooks.sh'], {
+  let result = await runAsRoot('bash', ['scripts/install-managed-hooks.sh'], {
     env: envFor({
       CWD_INSTALL_ROOT: installRoot,
       CWD_DATA_DIR: dataDir,
@@ -106,7 +139,7 @@ test('managed hook installer refuses to overwrite an unmarked requirements file'
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /CWD_MANAGED_HOOKS_ADOPT=1/);
   assert.equal(await fs.readFile(path.join(managedDir, 'requirements.toml'), 'utf8'), 'external-managed-policy\n');
-  result = await run('bash', ['scripts/install-managed-hooks.sh'], {
+  result = await runAsRoot('bash', ['scripts/install-managed-hooks.sh'], {
     env: envFor({
       CWD_INSTALL_ROOT: installRoot,
       CWD_DATA_DIR: dataDir,
@@ -117,7 +150,7 @@ test('managed hook installer refuses to overwrite an unmarked requirements file'
   });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(await fs.readFile(path.join(managedDir, '.codex-worker-delegation-backup', 'requirements.toml'), 'utf8'), 'external-managed-policy\n');
-  result = await run('bash', ['scripts/uninstall-managed-hooks.sh'], {
+  result = await runAsRoot('bash', ['scripts/uninstall-managed-hooks.sh'], {
     env: envFor({ CWD_MANAGED_HOOKS_DIR: managedDir }),
   });
   assert.equal(result.status, 0, result.stderr);
