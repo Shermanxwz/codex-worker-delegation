@@ -30,6 +30,7 @@ const MAX_CWD_LENGTH = 4096;
 const MAX_MODEL_ID_LENGTH = 512;
 const MAX_PROVIDER_URL_LENGTH = 4096;
 const MAX_EFFORT_LENGTH = 128;
+const AUTH_MODES = new Set(['password', 'local_passwordless']);
 const HOOK_HEALTH_DOMAIN = 'cwd-hook-health-v1';
 const HOOK_NONCE = /^[a-f0-9]{48}$/;
 
@@ -149,8 +150,21 @@ export function createApp({ env = process.env, fetchImpl = fetch } = {}) {
         return sendJson(res, 200, { ok: true }, { 'set-cookie': webAuth.clearCookie() });
       }
       if (url.pathname.startsWith('/api/')) {
-        if (req.method === 'GET' && url.pathname === '/api/health') return sendJson(res, 200, { ok: true, version: VERSION, host, port, codexBinary: resolveCodexBinary(env), authRequired: await webAuth.isConfigured() || env.CWD_REQUIRE_AUTH === '1' || !isLoopback(host) });
+        if (req.method === 'GET' && url.pathname === '/api/health') return sendJson(res, 200, { ok: true, version: VERSION, host, port, codexBinary: resolveCodexBinary(env), authRequired: (await authPolicy({ env, host, webAuth })).required });
         if (!await authorizeUi(req, env, host, webAuth)) return sendJson(res, 401, { error: 'unauthorized' });
+        if (req.method === 'POST' && url.pathname === '/api/auth/mode') {
+          const policy = await authPolicy({ env, host, webAuth });
+          if (!policy.passwordlessAvailable) return sendJson(res, 403, { error: 'local passwordless mode is available only for an explicitly non-authenticated loopback launch' });
+          const body = await readJson(req);
+          if (!AUTH_MODES.has(body.mode)) return sendJson(res, 400, { error: 'auth mode must be password or local_passwordless' });
+          if (body.mode === 'local_passwordless' && policy.configured) await webAuth.setLocalPasswordless(true);
+          if (body.mode === 'password') {
+            if (!policy.configured) return sendJson(res, 409, { error: 'set a web password before selecting password mode' });
+            await webAuth.setLocalPasswordless(false);
+          }
+          await store.audit('auth.mode_changed', { mode: body.mode, loopback: policy.loopback, passwordlessAvailable: policy.passwordlessAvailable });
+          return sendJson(res, 200, { ok: true, ...(await authStatus({ req, env, host, webAuth })) });
+        }
         if (req.method === 'GET' && url.pathname === '/api/state') return sendJson(res, 200, publicState(await store.read()));
         if (req.method === 'GET' && url.pathname === '/api/catalog') return sendJson(res, 200, await loadCatalog(runtimeContext));
         if (req.method === 'GET' && url.pathname === '/api/runtime') {
@@ -223,7 +237,8 @@ export function createApp({ env = process.env, fetchImpl = fetch } = {}) {
           return sendJson(res, 200, publicState(next));
         }
         if (req.method === 'POST' && url.pathname === '/api/auth/change') {
-          if (!webAuth.authenticated(req)) return sendJson(res, 401, { error: 'login required' });
+          const policy = await authPolicy({ env, host, webAuth });
+          if (!webAuth.authenticated(req) && !policy.passwordlessLocal) return sendJson(res, 401, { error: 'login required' });
           const body = await readJson(req);
           if (!await webAuth.verifyPassword(body.currentPassword)) return sendJson(res, 401, { error: 'current password is invalid' });
           if (body.newPassword !== body.confirmPassword) return sendJson(res, 400, { error: 'password confirmation does not match' });
@@ -534,10 +549,36 @@ function buildRuntimeStatus(state, catalog) {
   };
 }
 
-async function authorizeUi(req, env, host, webAuth) { const token = env.CWD_WEB_TOKEN; if (token && req.headers.authorization === `Bearer ${token}`) return true; if (await webAuth.isConfigured()) return webAuth.authenticated(req); return isLoopback(host) && env.CWD_REQUIRE_AUTH !== '1'; }
+async function authPolicy({ env, host, webAuth }) {
+  const configured = await webAuth.isConfigured();
+  const loopback = isLoopback(host);
+  const passwordlessAvailable = loopback && env.CWD_REQUIRE_AUTH === '0';
+  const passwordlessLocal = loopback && env.CWD_REQUIRE_AUTH !== '1' && (!configured || (passwordlessAvailable && await webAuth.isLocalPasswordless()));
+  const required = !passwordlessLocal && (configured || env.CWD_REQUIRE_AUTH === '1' || !loopback);
+  return { configured, loopback, passwordlessAvailable, passwordlessLocal, required };
+}
+async function authorizeUi(req, env, host, webAuth) {
+  const token = env.CWD_WEB_TOKEN;
+  if (token && req.headers.authorization === `Bearer ${token}`) return true;
+  const policy = await authPolicy({ env, host, webAuth });
+  if (policy.passwordlessLocal) return true;
+  return policy.configured ? webAuth.authenticated(req) : false;
+}
 function isLoopback(host) { return ['127.0.0.1', '::1', 'localhost'].includes(host); }
 function secureCookie(env, host) { return env.CWD_COOKIE_SECURE === '1' || !isLoopback(host); }
-async function authStatus({ req, env, host, webAuth }) { const configured = await webAuth.isConfigured(); return { configured, authenticated: configured ? webAuth.authenticated(req) : isLoopback(host) && env.CWD_REQUIRE_AUTH !== '1', required: configured || env.CWD_REQUIRE_AUTH === '1' || !isLoopback(host), minPasswordLength: MIN_PASSWORD_LENGTH, loopback: isLoopback(host) }; }
+async function authStatus({ req, env, host, webAuth }) {
+  const policy = await authPolicy({ env, host, webAuth });
+  return {
+    configured: policy.configured,
+    authenticated: policy.passwordlessLocal || (policy.configured && webAuth.authenticated(req)),
+    required: policy.required,
+    mode: policy.passwordlessLocal ? 'local_passwordless' : 'password',
+    passwordlessLocal: policy.passwordlessLocal,
+    passwordlessAvailable: policy.passwordlessAvailable,
+    minPasswordLength: MIN_PASSWORD_LENGTH,
+    loopback: policy.loopback
+  };
+}
 async function ensureCodexIntegration({ store, codex, appServerPool }) {
   await store.ensureGatewayToken(); const state = await store.read();
   if (state.installed && await codex.isInstalled()) return { providerId: CODEX_GATEWAY_PROVIDER_ID, agents: ['cwd-worker', 'cwd-verifier'], topLevelPreserved: true, cached: true };

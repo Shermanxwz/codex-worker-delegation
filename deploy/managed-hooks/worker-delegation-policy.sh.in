@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -u
+
+# codex-worker-delegation-managed-hooks-v1
+# This wrapper is deliberately fail-closed. A managed hook must not silently
+# fall back to an unpinned Node runtime or an unenforced project hook.
+POLICY_RUNNER=@@POLICY_RUNNER@@
+MANAGED_POLICY=@@MANAGED_POLICY@@
+PINNED_NODE=@@PINNED_NODE@@
+DATA_DIR=@@DATA_DIR@@
+PORT=@@PORT@@
+
+deny() {
+  /usr/bin/printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Managed Worker Delegation enforcement is unavailable; execution is blocked fail-closed."}}'
+  exit 0
+}
+
+[[ -x "$POLICY_RUNNER" && -f "$MANAGED_POLICY" && -d "$DATA_DIR" ]] || deny
+
+export CWD_DATA_DIR="$DATA_DIR"
+export CWD_PORT="$PORT"
+export CWD_HOOK_REQUIRE_CONTROL_PLANE=1
+export CWD_HOOK_CONTROL_PLANE_URL="http://127.0.0.1:${PORT}/internal/hook-health"
+export CWD_MANAGED_POLICY_RUNNER="$POLICY_RUNNER"
+export CWD_MANAGED_POLICY="$MANAGED_POLICY"
+export CWD_MANAGED_TASKS_DIR="$DATA_DIR/worker-tasks"
+
+is_supported_node() {
+  local node_bin="$1"
+  [[ -x "$node_bin" ]] || return 1
+  "$node_bin" -e 'const major=Number(process.versions.node.split(".")[0]); process.exit(Number.isInteger(major) && major >= 20 ? 0 : 1)' >/dev/null 2>&1
+}
+
+if is_supported_node "$PINNED_NODE"; then
+  export CWD_MANAGED_NODE_BIN="$PINNED_NODE"
+  export CWD_NODE_PATH="$PINNED_NODE"
+  exec "$PINNED_NODE" "$MANAGED_POLICY"
+fi
+
+deny

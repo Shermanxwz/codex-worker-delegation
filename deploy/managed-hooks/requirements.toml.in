@@ -1,0 +1,17 @@
+# codex-worker-delegation-managed-hooks-v1
+allow_managed_hooks_only = true
+
+[features]
+hooks = true
+
+[hooks]
+managed_dir = @@MANAGED_DIR_TOML@@
+
+[[hooks.PreToolUse]]
+matcher = ".*"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = @@MANAGED_SCRIPT_TOML@@
+timeout = 5
+statusMessage = "Enforcing Worker Delegation policy"

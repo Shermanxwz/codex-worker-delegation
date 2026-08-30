@@ -6,6 +6,8 @@
   <meta name="theme-color" content="#111a33">
   <title>Codex Worker Delegation</title>
   <link rel="icon" href="/icon.png" type="image/png">
+  <link rel="apple-touch-icon" href="/icon.png">
+  <link rel="manifest" href="/manifest.webmanifest">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -13,8 +15,15 @@
     <div class="login-panel">
       <div class="brand-lockup"><img src="/icon.png" alt=""><div><b>Codex Worker</b><span>LOCAL CONTROL PLANE</span></div></div>
       <div class="login-copy"><p class="eyebrow">CONTROL PLANE</p><h1>登录</h1><p>控制面密码与 ChatGPT OAuth、New API Key 完全独立。</p></div>
-      <label class="field">密码<input id="loginPassword" type="password" autocomplete="current-password" placeholder="输入控制面密码"></label>
-      <button id="loginButton" class="primary wide">登录</button>
+      <div id="loginPasswordPanel">
+        <label class="field">密码<input id="loginPassword" type="password" autocomplete="current-password" placeholder="输入控制面密码"></label>
+        <button id="loginButton" class="primary wide">登录</button>
+      </div>
+      <div id="loginSetupPanel" hidden>
+        <p id="loginSetupHint" class="login-hint">首次运行需要设置控制面密码。</p>
+        <div class="form-grid two"><label class="field">新密码<input id="loginSetupPassword" type="password" autocomplete="new-password"></label><label class="field">确认密码<input id="loginSetupConfirm" type="password" autocomplete="new-password"></label></div>
+        <button id="loginSetupButton" class="primary wide">设置密码并进入</button>
+      </div>
       <p id="loginResult" class="form-message"></p>
     </div>
   </section>
@@ -106,7 +115,7 @@
         </section>
 
         <section class="page" data-page="security" hidden>
-          <div class="page-head"><div><p class="eyebrow">SECURITY</p><h1>访问保护</h1><p class="lead">这里只管理控制面密码，不触碰 ChatGPT 登录。</p></div><span id="securityStatus" class="status-pill neutral">检测中</span></div>
+          <div class="page-head"><div><p class="eyebrow">SECURITY</p><h1>访问保护</h1><p class="lead">这里只管理控制面密码，不触碰 ChatGPT 登录。本机运行时可选择免密码，公网和生产服务仍强制认证。</p></div><span id="securityStatus" class="status-pill neutral">检测中</span></div>
           <section class="card auth-card">
             <div id="setupPanel" hidden>
               <h2>设置密码</h2><p class="muted">首次设置只需要新密码与确认密码。</p>
@@ -120,6 +129,15 @@
             </div>
             <p id="securityResult" class="form-message"></p>
           </section>
+          <section id="localModePanel" class="card local-auth-panel" hidden>
+            <div class="local-auth-head"><div><p class="eyebrow">LOOPBACK ONLY</p><h2>本机访问模式</h2><p class="muted">仅当服务绑定回环地址且以本地非强制认证方式启动时可用。不会关闭公网或 systemd 的认证边界。</p></div><span id="localModeBadge" class="status-pill neutral">检测中</span></div>
+            <div class="auth-mode-options" role="group" aria-label="本机访问模式">
+              <button type="button" class="auth-mode-option" data-auth-mode="local_passwordless"><span class="mode-symbol">✦</span><span><b>本机免密码</b><small>只允许当前设备访问，适合本地开发与个人使用。</small></span></button>
+              <button type="button" class="auth-mode-option" data-auth-mode="password"><span class="mode-symbol">◇</span><span><b>密码保护</b><small>使用控制面密码建立 HttpOnly 会话。</small></span></button>
+            </div>
+            <p id="localModeResult" class="form-message"></p>
+          </section>
+          <section id="localModeLocked" class="card subtle-card local-auth-locked" hidden><h2>本机免密码未开放</h2><p>当前启动配置仍强制控制面认证。仅在确认服务绑定 127.0.0.1 / ::1 后，以 <code>CWD_REQUIRE_AUTH=0</code> 启动本地实例才会出现免密码选项。</p></section>
           <section class="security-strip"><span>HttpOnly session</span><span>SameSite</span><span>scrypt hash</span><span>loopback by default</span></section>
         </section>
       </main>
@@ -134,7 +152,7 @@
       <section class="drawer-status"><span>Provider capability API</span><strong id="drawerCapabilities">—</strong><p id="drawerCapabilitiesDetail">—</p></section>
       <section class="drawer-status"><span>插件集成</span><strong id="drawerInstallState">—</strong><p>安装 namespaced provider 与 cwd-worker / cwd-verifier。</p></section>
       <div class="actions vertical"><button id="installIntegration" class="primary">安装 / 刷新原生集成</button><button id="verifyCoexistence" class="secondary">真实共存验收</button></div>
-      <pre id="integrationResult" class="result-box"></pre>
+      <pre id="integrationResult" class="result-box" hidden></pre>
       <div class="drawer-note"><b>边界</b><p>ChatGPT OAuth 活跃时，Main 永远保持官方。第三方只通过显式 provider thread 共存；不会修改 auth.json 或官方顶层 provider。</p></div>
     </div>
   </aside>

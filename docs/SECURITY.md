@@ -20,6 +20,7 @@ Codex Worker Delegation 3.2 把五个边界分开：
 - `codex_worker_gateway` 使用独立本地 bearer token；Codex 无需读取第三方 API key。
 - Web password 只保护本地控制平面；logout 不会退出 ChatGPT OAuth。
 - 密码轮换会撤销既有 Web session。
+- “本机免密码”只在显式 `CWD_REQUIRE_AUTH=0`、服务绑定回环地址且控制面处于本机访问时有效；它不删除已配置的密码。
 
 ## OAuth -> Main authorization boundary
 
@@ -79,6 +80,16 @@ Registry 的来源是：
 
 `CWD_HOOK_REQUIRE_CONTROL_PLANE=0` 只用于测试，不应进入生产环境。
 
+### System-managed hook profile
+
+如果需要“所有工具调用都先进入项目 policy”的主机级边界，应安装版本化的 `deploy/managed-hooks` profile，而不是只依赖插件 payload。它通过 root-owned `requirements.toml` 的 `allow_managed_hooks_only = true` 指定唯一 managed hook source，再由 wrapper 固定 loopback health endpoint、`CWD_HOOK_REQUIRE_CONTROL_PLANE=1`、Node 20+ 和项目 policy runner。
+
+这层仍尊重 `OFFICIAL` 的故障隔离语义：进入 OFFICIAL 后，项目 policy 不添加 deny，native Codex 不应因为控制面故障被锁死；AUTO / DELEGATE / WORKER / MAIN 则继续在同一个 bridge 中执行认证 health、mode、OAuth、provider、capability、sandbox 和 role 检查。bridge 找不到 runner、policy、data directory、Node 或收到异常时才 fail closed。
+
+安装器只在显式 `CWD_MANAGED_HOOKS_ADOPT=1` 时备份并替换未标记的既有文件；卸载器只删除带有项目 marker 的生成文件。模板不包含 `/root`、token、密码、OAuth 状态、`auth.json` 或 task snapshot。
+
+详见 [System-managed Worker enforcement](MANAGED_HOOKS.md)。
+
 ## Worker execution boundary
 
 - Official -> Official 可以使用 native `cwd-worker` / `cwd-verifier`。
@@ -107,6 +118,7 @@ App Server pool 只复用 idle client；并行 Worker 不共享同一个 active 
 
 - 默认绑定 `127.0.0.1`。
 - systemd user/root unit、`npm start`、`npm run start:local` 默认 `CWD_REQUIRE_AUTH=1`。
+- 本机开发若明确使用 `CWD_REQUIRE_AUTH=0`，Web 可选择 `local_passwordless`；非回环绑定和 production/systemd 配置会忽略该模式并继续要求认证。
 - JSON 管理请求要求 `application/json` 或 `application/*+json`，避免浏览器 cross-site `text/plain` simple request 被当成 localhost 管理请求。
 - 非 loopback 部署必须使用 TLS reverse proxy、host firewall、rate limiting，并设置合适的 secure cookie 行为。
 - 不要把 raw Node listener 直接暴露公网。

@@ -52,6 +52,16 @@ OFFICIAL + control-plane down
 
 AUTO / DELEGATE / MAIN 仍要求经过认证的控制平面健康证明并 fail closed。
 
+### 系统级 Managed Hook profile
+
+普通插件 Hook 由插件 payload 提供；需要主机级强制时，管理员可以安装 `deploy/managed-hooks` profile。它将 root-owned `requirements.toml` 的 `allow_managed_hooks_only = true`、loopback health pin、Node 20+ pin 和 fail-closed bridge 组合成一个可验证部署边界。模板不包含机器绝对路径或 secret，路径在安装时渲染；安装器拒绝覆盖未标记的现有文件，并支持显式 adopt + backup。
+
+该 profile 不改变模式语义：`OFFICIAL` 仍由官方 Codex 原生行为负责，项目 policy 休眠；`AUTO` / `DELEGATE` / `WORKER` / `MAIN` 仍由同一个 server-side policy、OAuth Main lock、provider isolation、capability registry、sandbox 和 Worker role 检查负责。它解决的是“Hook 是否必经且可重复部署”，不是增加一套旁路角色权限。
+
+英文说明和命令见 [System-managed Worker enforcement](MANAGED_HOOKS.md)。
+
+Web 认证也有独立的本机开发边界：只有显式 `CWD_REQUIRE_AUTH=0` 且监听地址是回环地址时，访问保护页才允许选择 `local_passwordless`。生产 systemd unit 和非回环部署始终回到密码认证。
+
 ## OAuth-aware Main
 
 Main provider 合法性来自官方 App Server `account/read`：
@@ -186,3 +196,5 @@ Version 3.2 keeps official behavior official and project behavior explicit. `OFF
 A unified Model Capability Registry combines `account/read`, official `model/list`, optional `modelProvider/capabilities/read`, and third-party `/v1/models`. Model existence and explicit reasoning options are validated at save and execution time. No global reasoning-effort guess list remains.
 
 Official -> Official may use native Codex subagents. Every route involving a third-party provider uses an explicit provider-isolated App Server thread with preserved provenance and observable task lifecycle.
+
+The optional system-managed hook profile renders a root-owned `requirements.toml` and fail-closed bridge from versioned templates. It is explicit because it changes the host-wide Codex hook boundary; it contains no host secrets. It preserves the same OFFICIAL dormant semantics and AUTO / WORKER / MAIN server-side role, provider, capability, sandbox, and lifecycle checks.

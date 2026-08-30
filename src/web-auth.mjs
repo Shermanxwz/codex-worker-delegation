@@ -74,6 +74,11 @@ export class WebAuth {
 
   async isConfigured() { return Boolean((await this.read())?.hash); }
 
+  async isLocalPasswordless() {
+    const stored = await this.read();
+    return stored?.localPasswordless === true;
+  }
+
   async setPassword(password) {
     return this.#writePassword(password, false);
   }
@@ -88,13 +93,35 @@ export class WebAuth {
     if (!overwrite && await this.isConfigured()) throw new Error('web password is already configured');
     const salt = crypto.randomBytes(16);
     const hash = await scrypt(String(password), salt, 64, { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
-    const payload = { version: 1, algorithm: 'scrypt', salt: salt.toString('base64url'), hash: hash.toString('base64url'), createdAt: new Date().toISOString() };
+    const payload = { version: 1, algorithm: 'scrypt', salt: salt.toString('base64url'), hash: hash.toString('base64url'), localPasswordless: false, mode: 'password', createdAt: new Date().toISOString() };
     await writeCredentialFile(this.file, `${JSON.stringify(payload, null, 2)}\n`, overwrite);
     await fs.chmod(this.file, 0o600).catch(() => {});
     // A password rotation is a credential-boundary change. Never allow an
     // already-issued browser session to outlive that boundary.
     this.sessions.clear();
     this.failures.clear();
+  }
+
+  async setLocalPasswordless(enabled) {
+    const stored = await this.read();
+    if (!stored?.hash) throw new Error('web password must be configured before selecting password mode');
+    const localPasswordless = Boolean(enabled);
+    const payload = {
+      ...stored,
+      version: stored.version || 1,
+      localPasswordless,
+      mode: localPasswordless ? 'local_passwordless' : 'password',
+      updatedAt: new Date().toISOString()
+    };
+    await writeCredentialFile(this.file, `${JSON.stringify(payload, null, 2)}\n`, true);
+    await fs.chmod(this.file, 0o600).catch(() => {});
+    // Returning to password protection invalidates every browser session. An
+    // opt-in to local passwordless access keeps an existing session usable so
+    // the operator can still rotate the retained password immediately.
+    if (!localPasswordless) {
+      this.sessions.clear();
+      this.failures.clear();
+    }
   }
 
   async verifyPassword(password) {

@@ -1,0 +1,121 @@
+// codex-worker-delegation-managed-hooks-v1
+// Generic system-managed bridge. Host-specific paths are supplied by the
+// installer through environment variables; no machine path or credential is
+// stored in the repository.
+import os from 'node:os';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
+import fs from 'node:fs/promises';
+
+const home = process.env.HOME || os.homedir();
+const defaultDataDir = path.join(home, '.local', 'share', 'codex-worker-delegation');
+const dataDir = path.resolve(process.env.CWD_MANAGED_DATA_DIR || process.env.CWD_DATA_DIR || defaultDataDir);
+const policyRunner = path.resolve(process.env.CWD_MANAGED_POLICY_RUNNER || path.join(
+  defaultDataDir,
+  'current',
+  'plugins',
+  'codex-worker-delegation',
+  'hooks',
+  'run-policy.sh',
+));
+const tasksDir = path.resolve(process.env.CWD_MANAGED_TASKS_DIR || path.join(dataDir, 'worker-tasks'));
+const port = String(process.env.CWD_MANAGED_PORT || process.env.CWD_PORT || '8788');
+const ACTIVE_MODES = new Set(['AUTO', 'DELEGATE']);
+const TERMINAL = new Set(['completed', 'failed', 'timed_out', 'cancelled', 'delegation_required']);
+
+function deny(reason) {
+  process.stdout.write(`${JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: reason,
+    },
+  })}\n`);
+}
+
+async function findActiveWorkerIdentity(hookInput) {
+  const sessionId = String(hookInput?.session_id || hookInput?.sessionId || '');
+  const turnId = String(hookInput?.turn_id || hookInput?.turnId || '');
+  if (!sessionId && !turnId) return null;
+  let entries;
+  try {
+    entries = await fs.readdir(tasksDir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+    try {
+      const job = JSON.parse(await fs.readFile(path.join(tasksDir, entry.name), 'utf8'));
+      if (!ACTIVE_MODES.has(job?.mode) || job?.provider !== 'third_party' || !['cross_provider_thread', 'provider_isolated_thread'].includes(job?.execution)) continue;
+      if (!['worker', 'verifier'].includes(job?.role) || TERMINAL.has(job?.status)) continue;
+      const threadMatches = sessionId && job.threadId && sessionId === String(job.threadId);
+      const turnMatches = turnId && job.turnId && turnId === String(job.turnId);
+      if (threadMatches || turnMatches) return { taskId: String(job.taskId || entry.name.replace(/\.json$/, '')), role: job.role };
+    } catch {
+      // Ignore malformed/stale records. The project policy remains authoritative.
+    }
+  }
+  return null;
+}
+
+function forward(input) {
+  return new Promise((resolve) => {
+    const child = spawn('/bin/bash', [policyRunner], {
+      env: {
+        ...process.env,
+        CWD_DATA_DIR: dataDir,
+        CWD_PORT: port,
+        CWD_HOOK_REQUIRE_CONTROL_PLANE: '1',
+        CWD_HOOK_CONTROL_PLANE_URL: `http://127.0.0.1:${port}/internal/hook-health`,
+        CWD_MANAGED_DATA_DIR: dataDir,
+        CWD_MANAGED_TASKS_DIR: tasksDir,
+        CWD_MANAGED_POLICY_RUNNER: policyRunner,
+        CWD_NODE_PATH: process.env.CWD_MANAGED_NODE_BIN || process.env.CWD_NODE_PATH || '',
+      },
+      stdio: ['pipe', 'pipe', 'inherit'],
+    });
+    let stdout = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.on('error', () => {
+      deny('Managed Worker Delegation policy runner could not start; execution is blocked fail-closed.');
+      resolve();
+    });
+    child.on('close', (code) => {
+      if (stdout) process.stdout.write(stdout);
+      if (code !== 0 && !stdout) deny('Managed Worker Delegation policy runner failed; execution is blocked fail-closed.');
+      resolve();
+    });
+    child.stdin.end(JSON.stringify(input));
+  });
+}
+
+let input;
+try {
+  input = JSON.parse(await new Promise((resolve, reject) => {
+    let text = '';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (chunk) => { text += chunk; });
+    process.stdin.on('end', () => resolve(text));
+    process.stdin.on('error', reject);
+  }));
+} catch {
+  deny('Managed Worker Delegation received invalid hook input; execution is blocked fail-closed.');
+  process.exit(0);
+}
+
+if (input?.hook_event_name !== 'PreToolUse' && input?.hookEventName !== 'PreToolUse') {
+  await forward(input);
+  process.exit(0);
+}
+
+const identity = await findActiveWorkerIdentity(input);
+if (identity) {
+  input = {
+    ...input,
+    agent_id: input.agent_id || `managed-worker:${identity.taskId}`,
+    agent_type: input.agent_type || (identity.role === 'verifier' ? 'cwd-verifier' : 'cwd-worker'),
+  };
+}
+
+await forward(input);

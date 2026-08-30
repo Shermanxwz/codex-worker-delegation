@@ -44,3 +44,22 @@ test('password rotation immediately revokes every previously issued session', as
   const replacement = await auth.login('DifferentHorseBatteryStaple#2', 'client-a');
   assert.equal(auth.authenticated({ headers: { cookie: `cwd_session=${replacement}` } }), true);
 });
+
+test('local passwordless preference is durable without removing the retained password', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cwd-auth-local-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const auth = new WebAuth({ env: { CWD_DATA_DIR: dir } });
+  const password = 'CorrectHorseBatteryStaple!';
+  await auth.setPassword(password);
+  await auth.setLocalPasswordless(true);
+  assert.equal(await auth.isLocalPasswordless(), true);
+  const enabled = JSON.parse(await fs.readFile(path.join(dir, 'web-auth.json'), 'utf8'));
+  assert.equal(enabled.localPasswordless, true);
+  assert.equal(await auth.verifyPassword(password), true);
+
+  await auth.setLocalPasswordless(false);
+  assert.equal(await auth.isLocalPasswordless(), false);
+  const disabled = JSON.parse(await fs.readFile(path.join(dir, 'web-auth.json'), 'utf8'));
+  assert.equal(disabled.localPasswordless, false);
+  assert.equal(await auth.verifyPassword(password), true);
+});
