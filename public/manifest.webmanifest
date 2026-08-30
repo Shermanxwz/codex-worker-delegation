@@ -1,0 +1,16 @@
+{
+  "name": "Codex Worker Delegation",
+  "short_name": "Codex Worker",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f4f6fa",
+  "theme_color": "#111a33",
+  "icons": [
+    {
+      "src": "/icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -157,6 +157,21 @@ npm run validate:deployment
 
 System scope 若由 root 安装到非 root desktop identity，所有 Codex config / plugin writes 必须以目标 service identity 执行。直接 root 写入普通用户 `CODEX_HOME` 应被拒绝。
 
+### System-managed Worker enforcement profile
+
+若目标主机要求主机级“所有 `PreToolUse` 先经过项目 policy”，生产安装还应显式执行：
+
+```bash
+sudo env CWD_INSTALL_ROOT=/absolute/path/to/deployment-root \
+  CWD_DATA_DIR=/absolute/path/to/worker-data \
+  npm run install:managed-hooks
+sudo env CWD_INSTALL_ROOT=/absolute/path/to/deployment-root \
+  CWD_DATA_DIR=/absolute/path/to/worker-data \
+  npm run validate:managed-hooks
+```
+
+这一步是独立的、root-owned 的部署 profile，不把 `/etc/codex` 渲染结果或任何凭据放进仓库。验收记录应包含 `CWD_MANAGED_HOOKS_VALID`；release 变化后应重新安装或至少确认 wrapper 仍指向当前 `current` tree。它保留 OFFICIAL 的 dormant/native 语义，AUTO / DELEGATE / WORKER / MAIN 继续执行同一套 fail-closed server-side policy。
+
 ## Fail-closed policy
 
 ### 项目控制模式：AUTO / DELEGATE / MAIN

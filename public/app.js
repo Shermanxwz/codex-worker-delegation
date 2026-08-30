@@ -54,7 +54,8 @@ function setPill(el, text, tone = 'neutral') {
 function showLogin(show) {
   $('loginView').hidden = !show;
   $('appShell').hidden = show;
-  if (show) setTimeout(() => $('loginPassword')?.focus(), 20);
+  renderLogin();
+  if (show) setTimeout(() => $(app.auth?.configured ? 'loginPassword' : 'loginSetupPassword')?.focus(), 20);
 }
 
 async function refreshHealth() {
@@ -68,9 +69,10 @@ async function refreshHealth() {
 
 async function refreshAuth() {
   app.auth = await api('/api/auth/status');
-  const needsLogin = app.auth.configured && !app.auth.authenticated;
+  const needsLogin = app.auth.required && !app.auth.authenticated;
   showLogin(needsLogin);
-  if (app.auth.configured && app.auth.authenticated) setPill($('authPill'), '已登录', 'good');
+  if (app.auth.passwordlessLocal) setPill($('authPill'), '本机免密码', 'good');
+  else if (app.auth.configured && app.auth.authenticated) setPill($('authPill'), '已登录', 'good');
   else if (!app.auth.configured) setPill($('authPill'), '未设置密码', 'warn');
   else setPill($('authPill'), '需登录', 'warn');
   renderSecurity();
@@ -328,9 +330,29 @@ function renderSecurity() {
   if (!app.auth) return;
   $('setupPanel').hidden=Boolean(app.auth.configured);
   $('changePanel').hidden=!app.auth.configured || !app.auth.authenticated;
-  if (!app.auth.configured) setPill($('securityStatus'),'未设置','warn');
+  const localModePanel=$('localModePanel');
+  const localModeLocked=$('localModeLocked');
+  if (localModePanel) localModePanel.hidden=!app.auth.passwordlessAvailable;
+  if (localModeLocked) localModeLocked.hidden=!app.auth.loopback || app.auth.passwordlessAvailable || !app.auth.required;
+  if (app.auth.passwordlessAvailable) {
+    setPill($('localModeBadge'),app.auth.passwordlessLocal?'本机免密码':'密码保护',app.auth.passwordlessLocal?'good':'neutral');
+    qsa('[data-auth-mode]').forEach((button)=>{
+      button.classList.toggle('selected',button.dataset.authMode===app.auth.mode);
+      if(button.dataset.authMode==='password')button.disabled=!app.auth.configured;
+    });
+  }
+  if (app.auth.passwordlessLocal) setPill($('securityStatus'),'本机免密码','good');
+  else if (!app.auth.configured) setPill($('securityStatus'),'未设置','warn');
   else if (app.auth.authenticated) setPill($('securityStatus'),'已保护','good');
   else setPill($('securityStatus'),'需登录','warn');
+}
+
+function renderLogin() {
+  if (!app.auth) return;
+  const setup = !app.auth.configured;
+  if ($('loginPasswordPanel')) $('loginPasswordPanel').hidden=setup;
+  if ($('loginSetupPanel')) $('loginSetupPanel').hidden=!setup;
+  if (setup && $('loginSetupHint')) $('loginSetupHint').textContent=app.auth.loopback?'首次运行需要设置控制面密码。':'首次配置需要使用受保护的 bootstrap token。';
 }
 
 async function login() {
@@ -344,6 +366,17 @@ async function setupPassword() {
   try {await api('/api/auth/setup',{method:'POST',body:{password,confirmPassword}});$('setupPassword').value='';$('setupConfirm').value='';setMessage('securityResult','密码已设置。','good');await refreshAuth();}
   catch(error){setMessage('securityResult',error.message,'bad');}
 }
+async function setupLoginPassword() {
+  const password=$('loginSetupPassword').value, confirmPassword=$('loginSetupConfirm').value;
+  if(password!==confirmPassword){setMessage('loginResult','两次密码不一致。','bad');return;}
+  try {
+    await api('/api/auth/setup',{method:'POST',body:{password,confirmPassword}});
+    $('loginSetupPassword').value='';$('loginSetupConfirm').value='';
+    setMessage('loginResult','密码已设置，正在进入控制面。','good');
+    const allowed=await refreshAuth();
+    if(allowed) await refreshData();
+  } catch(error){setMessage('loginResult',error.message,'bad');}
+}
 async function changePassword() {
   const currentPassword=$('currentPassword').value,newPassword=$('newPassword').value,confirmPassword=$('newPasswordConfirm').value;
   if(newPassword!==confirmPassword){setMessage('securityResult','两次新密码不一致。','bad');return;}
@@ -351,6 +384,13 @@ async function changePassword() {
   catch(error){setMessage('securityResult',error.message,'bad');}
 }
 async function logout() { try{await api('/api/auth/logout',{method:'POST',body:{}});}finally{await refreshAuth();} }
+async function setAuthMode(mode) {
+  try {
+    await api('/api/auth/mode',{method:'POST',body:{mode}});
+    setMessage('localModeResult',mode==='local_passwordless'?'已切换为本机免密码。公网访问仍不会被放开。':'已切回密码保护。','good');
+    await refreshAuth();
+  } catch(error){setMessage('localModeResult',error.message,'bad');}
+}
 
 function openDrawer() { $('integrationDrawer').classList.add('open');$('integrationDrawer').setAttribute('aria-hidden','false');$('drawerBackdrop').hidden=false;renderIntegration(); }
 function closeDrawer() { $('integrationDrawer').classList.remove('open');$('integrationDrawer').setAttribute('aria-hidden','true');$('drawerBackdrop').hidden=true; }
@@ -364,8 +404,9 @@ function renderIntegration() {
   $('drawerCapabilitiesDetail').textContent=caps?Object.keys(caps).join(' · '):(app.catalog.official?.providerCapabilitiesError||'当前 Codex 未提供该方法，核心 model/list 仍可工作');
   $('drawerInstallState').textContent=app.state.installed?'已安装':'待安装';
 }
-async function installIntegration() { try{const result=await api('/api/codex/install',{method:'POST',body:{}});$('integrationResult').textContent=JSON.stringify(result,null,2);await refreshData();}catch(error){$('integrationResult').textContent=error.message;} }
-async function verifyCoexistence() { try{const result=await api('/api/verify/coexistence',{method:'POST',body:{}});$('integrationResult').textContent=JSON.stringify(result,null,2);await refreshData();}catch(error){$('integrationResult').textContent=error.message;} }
+function setIntegrationResult(value) { const output=$('integrationResult'); output.textContent=value; output.hidden=false; }
+async function installIntegration() { try{const result=await api('/api/codex/install',{method:'POST',body:{}});setIntegrationResult(JSON.stringify(result,null,2));await refreshData();}catch(error){setIntegrationResult(error.message);} }
+async function verifyCoexistence() { try{const result=await api('/api/verify/coexistence',{method:'POST',body:{}});setIntegrationResult(JSON.stringify(result,null,2));await refreshData();}catch(error){setIntegrationResult(error.message);} }
 
 function escapeHtml(value='') { return String(value).replace(/[&<>'"]/g,(char)=>({ '&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;' }[char])); }
 
@@ -373,12 +414,14 @@ function bind() {
   window.addEventListener('hashchange',renderNavigation);
   $('refreshButton').addEventListener('click',()=>refreshAll().catch((error)=>alert(error.message)));
   $('loginButton').addEventListener('click',login); $('loginPassword').addEventListener('keydown',(event)=>{if(event.key==='Enter')login();});
+  $('loginSetupButton').addEventListener('click',setupLoginPassword); $('loginSetupPassword').addEventListener('keydown',(event)=>{if(event.key==='Enter')setupLoginPassword();}); $('loginSetupConfirm').addEventListener('keydown',(event)=>{if(event.key==='Enter')setupLoginPassword();});
   $('saveProvider').addEventListener('click',saveProvider); $('probeProvider').addEventListener('click',probeProvider);
   $('saveRouting').addEventListener('click',saveRouting);
   $('testAllModels').addEventListener('click',()=>testModels((app.catalog?.thirdParty?.models||[]).map((model)=>model.id)));
   $('setupButton').addEventListener('click',setupPassword); $('changePasswordButton').addEventListener('click',changePassword); $('logoutButton').addEventListener('click',logout);
   $('integrationButton').addEventListener('click',openDrawer); $('closeDrawer').addEventListener('click',closeDrawer); $('drawerBackdrop').addEventListener('click',closeDrawer);
   $('installIntegration').addEventListener('click',installIntegration); $('verifyCoexistence').addEventListener('click',verifyCoexistence);
+  qsa('[data-auth-mode]').forEach((button)=>button.addEventListener('click',()=>setAuthMode(button.dataset.authMode)));
   qsa('[data-set-mode]').forEach((button)=>button.addEventListener('click',()=>setMode(button.dataset.setMode)));
   qsa('[data-routing-mode]').forEach((button)=>button.addEventListener('click',()=>{app.selectedRoutingMode=button.dataset.routingMode;app.routeDraft=null;renderRouting();}));
   qsa('[data-page-link]').forEach((link)=>link.addEventListener('click',()=>setTimeout(renderNavigation,0)));

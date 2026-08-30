@@ -20,6 +20,7 @@
 |---|---|
 | [架构 / Architecture](ARCHITECTURE.md) | OFFICIAL / AUTO / WORKER / MAIN、OAuth-aware Main、Model Capability Registry、Worker provenance |
 | [安全模型 / Security](SECURITY.md) | OAuth、New API key、Web 密码、Hook/MCP、provider/sandbox/Worker 权限边界 |
+| [系统级 Worker 强制执行 / Managed Hooks](MANAGED_HOOKS.md) | root-owned requirements、fail-closed bridge、安装/验证/卸载和主机边界 |
 | [生产封存 / Production Seal](PRODUCTION_SEAL.md) | Hosted CI、CORE、Desktop-native、Archive 的验收和真实设备边界 |
 | [项目主页 / Project README](../README.md) | 面向使用者的中英双语项目说明和安装入口 |
 
@@ -35,4 +36,5 @@ Facts preserved by the documentation:
 - A third-party standalone Main is allowed only when official OAuth is absent.
 - Model and Reasoning validity comes from a unified Model Capability Registry; the project does not guess reasoning levels.
 - Official -> Official may use native subagents; every route involving a third-party provider uses explicit provider-isolated App Server execution.
+- The optional system-managed hook profile makes the strict Worker policy reproducible without committing host paths or secrets.
 - Hosted CI proves project-controlled boundaries; `ARCHIVE_READY` still requires a real signed-in Linux installation.

@@ -200,6 +200,8 @@ http://127.0.0.1:8788/
 
 访问保护页面只显示当前状态需要的一套表单：首次设置时显示新密码 + 确认；登录后修改时显示当前密码 + 新密码 + 确认；登录页只有登录密码。Web logout 不会退出 ChatGPT OAuth。
 
+本机开发还可以显式选择“本机免密码”：先确认只绑定 `127.0.0.1` / `::1`，再以 `CWD_HOST=127.0.0.1 CWD_PORT=8789 CWD_REQUIRE_AUTH=0 npm run start:local` 启动，访问保护页会出现本机访问模式选择。该模式只对回环监听生效；公网绑定、systemd 服务和默认 `npm start` 仍强制密码认证。切回密码保护前需要先设置控制面密码。
+
 ## 安装与验证
 
 要求：Node.js 20+，以及官方 ChatGPT Linux bundled Codex 或当前 Codex binary。
@@ -216,6 +218,20 @@ npm start
 npm run install:linux
 npm run validate:deployment
 ~~~
+
+如需把本机“系统级强制 Worker 调度”也纳入可重复部署，请在 active release tree 上显式安装 managed-hook profile：
+
+~~~bash
+cd /absolute/path/to/deployment-root/current
+sudo env CWD_INSTALL_ROOT=/absolute/path/to/deployment-root \
+  CWD_DATA_DIR=/absolute/path/to/worker-data \
+  npm run install:managed-hooks
+sudo env CWD_INSTALL_ROOT=/absolute/path/to/deployment-root \
+  CWD_DATA_DIR=/absolute/path/to/worker-data \
+  npm run validate:managed-hooks
+~~~
+
+这一步会安装 root-owned `requirements.toml` 和 fail-closed bridge，拒绝未标记文件的静默覆盖；已有手工 `/etc/codex` overlay 需要迁移时，显式设置 `CWD_MANAGED_HOOKS_ADOPT=1`。它不把 token、密码、OAuth 状态、`auth.json` 或 Worker 状态写进仓库。完整说明见 [系统级 Worker 强制执行](docs/MANAGED_HOOKS.md)。`OFFICIAL` 仍然交还官方 Codex；`AUTO` / `WORKER` / `MAIN` 才经过项目控制策略。
 
 真实 signed-in Linux 设备上的严格验收：
 
@@ -234,6 +250,7 @@ Hosted CI 可以验证代码、Node 20/22/24、并发压力、当前 Codex、固
 - [文档中心 / Documentation](docs/README.md)
 - [架构 / Architecture](docs/ARCHITECTURE.md)
 - [安全模型 / Security](docs/SECURITY.md)
+- [系统级 Worker 强制执行 / Managed Hooks](docs/MANAGED_HOOKS.md)
 - [生产封存 / Production Seal](docs/PRODUCTION_SEAL.md)
 - [Codex plugin skill](plugins/codex-worker-delegation/skills/codex-worker-delegation/SKILL.md)
 
@@ -295,7 +312,7 @@ Changing the model immediately reconciles effort; an effort not supported by the
 
 The high-frequency navigation is Overview, New API, Model Routing, Connectivity, and Access Protection. Low-frequency native Codex integration lives in the top-right settings drawer.
 
-The Overview reports the active mode, whether it is effectively applied, and whether Main is locked by ChatGPT OAuth. Reasoning is rendered as a model-specific slider from live registry metadata. Access Protection renders only the password form relevant to the current auth state.
+The Overview reports the active mode, whether it is effectively applied, and whether Main is locked by ChatGPT OAuth. Reasoning is rendered as a model-specific slider from live registry metadata. Access Protection renders only the password form relevant to the current auth state. An explicitly launched loopback instance (`CWD_REQUIRE_AUTH=0`) may select local passwordless access; public bindings, systemd units, and the default launcher remain password-protected.
 
 ## Validation and archive boundary
 
@@ -318,6 +335,7 @@ Hosted CI proves project-controlled source/runtime/deployment compatibility, inc
 - [Documentation center / 文档中心](docs/README.md)
 - [Architecture / 架构](docs/ARCHITECTURE.md)
 - [Security / 安全模型](docs/SECURITY.md)
+- [System-managed Worker enforcement / 系统级 Worker 强制执行](docs/MANAGED_HOOKS.md)
 - [Production seal / 生产封存](docs/PRODUCTION_SEAL.md)
 
 ## License
